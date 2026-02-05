@@ -1,0 +1,39 @@
+[package]
+name = "nostr-mcp-server"
+version = "0.1.0"
+edition = "2021"
+authors = ["Nostr MCP Server Contributors"]
+description = "A Model Context Protocol (MCP) server for Nostr, enabling AI agents to interact with the Nostr network"
+license = "MIT"
+repository = "https://github.com/tami1A84/rust-nostr-mcp"
+keywords = ["nostr", "mcp", "ai", "claude"]
+categories = ["network-programming", "api-bindings"]
+
+[dependencies]
+# Nostr SDK for protocol handling
+nostr-sdk = "0.38"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# JSON processing
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Environment variable handling
+dotenvy = "0.15"
+
+# Error handling
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async traits
+async-trait = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
