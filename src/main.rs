@@ -2,7 +2,11 @@
 //!
 //! A Model Context Protocol (MCP) server that enables AI agents to interact
 //! with the Nostr network for reading and writing notes.
+//!
+//! Configuration is stored in ~/.config/rust-nostr-mcp/config.json
+//! Private keys are stored locally and never passed to AI agents.
 
+mod config;
 mod mcp;
 mod nostr_client;
 mod tools;
@@ -11,6 +15,7 @@ use anyhow::Result;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+use crate::config::Config;
 use crate::mcp::McpServer;
 use crate::nostr_client::NostrClientConfig;
 
@@ -31,44 +36,27 @@ fn init_logging() {
         .init();
 }
 
-/// Load configuration from environment variables.
+/// Load configuration from config file (~/.config/rust-nostr-mcp/config.json).
+/// Falls back to environment variables for backward compatibility.
 fn load_config() -> NostrClientConfig {
-    // Load .env file if present
-    if let Err(e) = dotenvy::dotenv() {
-        info!("No .env file found or error loading it: {}", e);
-    }
+    // Try to load from config file first
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to load config file, using defaults: {}", e);
+            Config::default()
+        }
+    };
 
-    // Try to load secret key from environment
-    let secret_key = std::env::var("NSEC")
-        .or_else(|_| std::env::var("NOSTR_SECRET_KEY"))
-        .ok();
+    let secret_key = config.privatekey.clone();
 
     if secret_key.is_none() {
-        warn!("No secret key found (NSEC or NOSTR_SECRET_KEY). Running in read-only mode.");
+        warn!("No private key configured. Running in read-only mode.");
+        warn!("To enable write access, add your nsec to: {:?}", Config::config_path().unwrap_or_default());
     }
 
-    // Load relay list from environment or use defaults
-    let relays = std::env::var("NOSTR_RELAYS")
-        .map(|s| s.split(',').map(|r| r.trim().to_string()).collect())
-        .unwrap_or_else(|_| {
-            vec![
-                "wss://relay.damus.io".to_string(),
-                "wss://nos.lol".to_string(),
-                "wss://relay.nostr.band".to_string(),
-                "wss://nostr.wine".to_string(),
-                "wss://relay.snort.social".to_string(),
-            ]
-        });
-
-    // Search-capable relays for search_notes
-    let search_relays = std::env::var("NOSTR_SEARCH_RELAYS")
-        .map(|s| s.split(',').map(|r| r.trim().to_string()).collect())
-        .unwrap_or_else(|_| {
-            vec![
-                "wss://relay.nostr.band".to_string(),
-                "wss://nostr.wine".to_string(),
-            ]
-        });
+    let relays = config.read_relays();
+    let search_relays = config.search_relays();
 
     NostrClientConfig {
         secret_key,
@@ -77,16 +65,44 @@ fn load_config() -> NostrClientConfig {
     }
 }
 
+/// Print configuration instructions on first run.
+fn print_setup_instructions() {
+    let config_path = Config::config_path().unwrap_or_default();
+    eprintln!();
+    eprintln!("=== Nostr MCP Server Setup ===");
+    eprintln!();
+    eprintln!("Configuration file: {:?}", config_path);
+    eprintln!();
+    eprintln!("To enable posting, add your private key (nsec) to the config file:");
+    eprintln!();
+    eprintln!("  {{");
+    eprintln!("    \"relays\": {{");
+    eprintln!("      \"wss://relay.damus.io\": {{ \"read\": true, \"write\": true, \"search\": false }}");
+    eprintln!("    }},");
+    eprintln!("    \"privatekey\": \"nsec1...\"");
+    eprintln!("  }}");
+    eprintln!();
+    eprintln!("IMPORTANT: Your private key is stored locally and never passed to AI agents.");
+    eprintln!();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     init_logging();
 
     info!("Starting Nostr MCP Server...");
 
+    // Create default config file if it doesn't exist
+    match Config::create_default_if_missing() {
+        Ok(true) => print_setup_instructions(),
+        Ok(false) => {}
+        Err(e) => warn!("Could not create default config: {}", e),
+    }
+
     let config = load_config();
 
     info!("Loaded configuration:");
-    info!("  - Relays: {:?}", config.relays);
+    info!("  - Read relays: {:?}", config.relays);
     info!("  - Search relays: {:?}", config.search_relays);
     info!("  - Write access: {}", if config.secret_key.is_some() { "enabled" } else { "disabled (read-only)" });
 

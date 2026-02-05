@@ -34,9 +34,35 @@ The binary will be available at `target/release/nostr-mcp-server`.
 
 ## Configuration
 
-### Environment Variables
+### Config File (Recommended)
 
-Create a `.env` file in the project directory or set environment variables:
+The server uses a configuration file at `~/.config/rust-nostr-mcp/config.json`. This follows the [algia](https://github.com/mattn/algia) convention.
+
+**Important:** Your private key is stored locally and **never passed to AI agents**.
+
+```json
+{
+  "relays": {
+    "wss://relay.damus.io": { "read": true, "write": true, "search": false },
+    "wss://nos.lol": { "read": true, "write": true, "search": false },
+    "wss://relay.nostr.band": { "read": true, "write": true, "search": true },
+    "wss://nostr.wine": { "read": true, "write": false, "search": true },
+    "wss://relay.snort.social": { "read": true, "write": true, "search": false }
+  },
+  "privatekey": "nsec1..."
+}
+```
+
+**Relay options:**
+- `read`: Fetch events from this relay
+- `write`: Publish events to this relay
+- `search`: Use for NIP-50 search queries
+
+A default config file is created automatically on first run.
+
+### Environment Variables (Legacy)
+
+For backward compatibility, you can also use environment variables:
 
 ```bash
 # Required for write access (posting notes)
@@ -87,14 +113,13 @@ Add the following to your Claude Desktop configuration file:
 {
   "mcpServers": {
     "nostr": {
-      "command": "/path/to/nostr-mcp-server",
-      "env": {
-        "NSEC": "nsec1..."
-      }
+      "command": "/path/to/nostr-mcp-server"
     }
   }
 }
 ```
+
+**Note:** Configure your private key in `~/.config/rust-nostr-mcp/config.json` instead of passing it via environment variables. This is more secure as the key is never exposed to the AI agent.
 
 ### Goose Configuration
 
@@ -111,8 +136,6 @@ extensions:
     type: stdio
     enabled: true
     cmd: /path/to/nostr-mcp-server
-    env:
-      NSEC: "nsec1..."
 ```
 
 Or configure via CLI:
@@ -122,8 +145,9 @@ goose configure
 # Select "Add Extension" -> "Command-line Extension"
 # Name: nostr
 # Command: /path/to/nostr-mcp-server
-# Environment: NSEC=nsec1...
 ```
+
+**Note:** Your private key should be configured in `~/.config/rust-nostr-mcp/config.json`, not in environment variables.
 
 ### Other MCP Clients
 
@@ -297,9 +321,11 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | cargo run
 nostr-mcp-server/
 ├── Cargo.toml           # Project dependencies
 ├── README.md            # This file
+├── CLAUDE.md            # Development plan
 ├── LICENSE              # MIT License
 └── src/
     ├── main.rs          # Entry point and configuration
+    ├── config.rs        # Configuration file management
     ├── mcp.rs           # MCP server implementation
     ├── nostr_client.rs  # Nostr SDK wrapper
     └── tools.rs         # Tool definitions and execution
@@ -391,9 +417,35 @@ cargo build --release
 
 ## 設定
 
-### 環境変数
+### 設定ファイル (推奨)
 
-プロジェクトディレクトリに `.env` ファイルを作成するか、環境変数を設定します：
+サーバーは `~/.config/rust-nostr-mcp/config.json` の設定ファイルを使用します。これは [algia](https://github.com/mattn/algia) の規則に従っています。
+
+**重要:** 秘密鍵はローカルに保存され、**AI エージェントには渡されません**。
+
+```json
+{
+  "relays": {
+    "wss://relay.damus.io": { "read": true, "write": true, "search": false },
+    "wss://nos.lol": { "read": true, "write": true, "search": false },
+    "wss://relay.nostr.band": { "read": true, "write": true, "search": true },
+    "wss://nostr.wine": { "read": true, "write": false, "search": true },
+    "wss://relay.snort.social": { "read": true, "write": true, "search": false }
+  },
+  "privatekey": "nsec1..."
+}
+```
+
+**リレーオプション:**
+- `read`: このリレーからイベントを取得
+- `write`: このリレーにイベントを公開
+- `search`: NIP-50 検索クエリに使用
+
+初回起動時にデフォルト設定ファイルが自動的に作成されます。
+
+### 環境変数 (レガシー)
+
+後方互換性のため、環境変数も使用できます：
 
 ```bash
 # 書き込みアクセスに必要 (ノート投稿用)
@@ -444,14 +496,13 @@ Claude Desktop の設定ファイルに以下を追加します：
 {
   "mcpServers": {
     "nostr": {
-      "command": "/path/to/nostr-mcp-server",
-      "env": {
-        "NSEC": "nsec1..."
-      }
+      "command": "/path/to/nostr-mcp-server"
     }
   }
 }
 ```
+
+**注意:** 秘密鍵は環境変数ではなく `~/.config/rust-nostr-mcp/config.json` で設定してください。これにより、鍵が AI エージェントに公開されることがなく、より安全です。
 
 ### Goose の設定
 
@@ -468,8 +519,6 @@ extensions:
     type: stdio
     enabled: true
     cmd: /path/to/nostr-mcp-server
-    env:
-      NSEC: "nsec1..."
 ```
 
 または CLI で設定：
@@ -479,8 +528,9 @@ goose configure
 # "Add Extension" -> "Command-line Extension" を選択
 # Name: nostr
 # Command: /path/to/nostr-mcp-server
-# Environment: NSEC=nsec1...
 ```
+
+**注意:** 秘密鍵は環境変数ではなく `~/.config/rust-nostr-mcp/config.json` で設定してください。
 
 ### 読み取り専用モード
 
@@ -650,9 +700,11 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | cargo run
 nostr-mcp-server/
 ├── Cargo.toml           # プロジェクト依存関係
 ├── README.md            # このファイル
+├── CLAUDE.md            # 開発計画
 ├── LICENSE              # MIT ライセンス
 └── src/
     ├── main.rs          # エントリーポイントと設定
+    ├── config.rs        # 設定ファイル管理
     ├── mcp.rs           # MCP サーバー実装
     ├── nostr_client.rs  # Nostr SDK ラッパー
     └── tools.rs         # ツール定義と実行

@@ -3,8 +3,12 @@
 //! Defines the available tools that AI agents can use to interact
 //! with the Nostr network. Tool names follow the algia convention
 //! with `nostr_` prefix for clarity.
+//!
+//! Security: Private keys are stored in the local config file
+//! (~/.config/rust-nostr-mcp/config.json) and never passed to AI agents.
 
 use anyhow::{anyhow, Result};
+use nostr_sdk::ToBech32;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -30,7 +34,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "post_nostr_note".to_string(),
-            description: "Post a new short text note (Kind 1) to the Nostr network. Requires write access (NSEC environment variable must be set).".to_string(),
+            description: "Post a new short text note (Kind 1) to the Nostr network. Requires write access (private key must be configured in ~/.config/rust-nostr-mcp/config.json).".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -44,7 +48,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_nostr_timeline".to_string(),
-            description: "Get the latest notes from the Nostr timeline. If authenticated, returns notes from followed users; otherwise, returns the global timeline.".to_string(),
+            description: "Get the latest notes from the Nostr timeline with author information (name, display_name, picture, nip05). If authenticated, returns notes from followed users; otherwise, returns the global timeline.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -57,7 +61,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "search_nostr_notes".to_string(),
-            description: "Search for notes on the Nostr network containing the specified keywords using NIP-50 search-capable relays.".to_string(),
+            description: "Search for notes on the Nostr network containing the specified keywords using NIP-50 search-capable relays. Returns notes with author information.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -75,7 +79,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_nostr_profile".to_string(),
-            description: "Get the profile information for a Nostr user by their public key (npub or hex format).".to_string(),
+            description: "Get the profile information for a Nostr user by their public key (npub or hex format). Returns name, display_name, about, picture, banner, nip05, lud16, and website.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -144,11 +148,12 @@ impl ToolExecutor {
         Ok(json!({
             "success": true,
             "event_id": event_id.to_hex(),
+            "nevent": event_id.to_bech32().unwrap_or_default(),
             "message": format!("Note posted successfully with event ID: {}", event_id.to_hex())
         }))
     }
 
-    /// Gets the timeline.
+    /// Gets the timeline with modern display format.
     async fn get_timeline(&self, arguments: Value) -> Result<Value> {
         let limit = arguments
             .get("limit")
@@ -160,10 +165,30 @@ impl ToolExecutor {
 
         let notes = self.client.get_timeline(limit).await?;
 
+        // Format notes for modern display
+        let formatted_notes: Vec<Value> = notes.iter().map(|note| {
+            json!({
+                "id": note.id,
+                "nevent": note.nevent,
+                "author": {
+                    "pubkey": note.author.pubkey,
+                    "npub": note.author.npub,
+                    "name": note.author.name,
+                    "display_name": note.author.display_name,
+                    "display": note.author.display(),
+                    "picture": note.author.picture,
+                    "nip05": note.author.nip05
+                },
+                "content": note.content,
+                "created_at": note.created_at,
+                "formatted_time": format_timestamp(note.created_at)
+            })
+        }).collect();
+
         Ok(json!({
             "success": true,
             "count": notes.len(),
-            "notes": notes
+            "notes": formatted_notes
         }))
     }
 
@@ -188,11 +213,31 @@ impl ToolExecutor {
 
         let notes = self.client.search_notes(query, limit).await?;
 
+        // Format notes for modern display
+        let formatted_notes: Vec<Value> = notes.iter().map(|note| {
+            json!({
+                "id": note.id,
+                "nevent": note.nevent,
+                "author": {
+                    "pubkey": note.author.pubkey,
+                    "npub": note.author.npub,
+                    "name": note.author.name,
+                    "display_name": note.author.display_name,
+                    "display": note.author.display(),
+                    "picture": note.author.picture,
+                    "nip05": note.author.nip05
+                },
+                "content": note.content,
+                "created_at": note.created_at,
+                "formatted_time": format_timestamp(note.created_at)
+            })
+        }).collect();
+
         Ok(json!({
             "success": true,
             "query": query,
             "count": notes.len(),
-            "notes": notes
+            "notes": formatted_notes
         }))
     }
 
@@ -217,5 +262,34 @@ impl ToolExecutor {
             "success": true,
             "profile": profile
         }))
+    }
+}
+
+/// Format a Unix timestamp to a human-readable relative time.
+fn format_timestamp(timestamp: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let diff = now.saturating_sub(timestamp);
+
+    if diff < 60 {
+        "just now".to_string()
+    } else if diff < 3600 {
+        let mins = diff / 60;
+        format!("{}m ago", mins)
+    } else if diff < 86400 {
+        let hours = diff / 3600;
+        format!("{}h ago", hours)
+    } else if diff < 604800 {
+        let days = diff / 86400;
+        format!("{}d ago", days)
+    } else {
+        // Format as date for older posts
+        let datetime = chrono::DateTime::from_timestamp(timestamp as i64, 0)
+            .map(|dt| dt.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| timestamp.to_string());
+        datetime
     }
 }
