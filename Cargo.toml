@@ -23,6 +23,12 @@ serde_json = "1"
 # Environment variable handling
 dotenvy = "0.15"
 
+# Directory paths
+dirs = "5.0"
+
+# Date/time handling
+chrono = "0.4"
+
 # Error handling
 anyhow = "1"
 

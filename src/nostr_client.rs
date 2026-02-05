@@ -5,6 +5,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use nostr_sdk::prelude::*;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -21,6 +22,47 @@ pub struct NostrClientConfig {
     pub search_relays: Vec<String>,
 }
 
+/// Author information for display.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuthorInfo {
+    /// Public key in hex format
+    pub pubkey: String,
+    /// Public key in npub format
+    pub npub: String,
+    /// Username (name field from profile)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Display name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Profile picture URL
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    /// NIP-05 identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nip05: Option<String>,
+}
+
+impl AuthorInfo {
+    /// Get the best display name for this author.
+    pub fn display(&self) -> String {
+        self.display_name
+            .as_ref()
+            .or(self.name.as_ref())
+            .cloned()
+            .unwrap_or_else(|| self.short_npub())
+    }
+
+    /// Get shortened npub (first 8 chars + ... + last 4 chars).
+    pub fn short_npub(&self) -> String {
+        if self.npub.len() > 16 {
+            format!("{}...{}", &self.npub[..12], &self.npub[self.npub.len()-4..])
+        } else {
+            self.npub.clone()
+        }
+    }
+}
+
 /// Wrapper around the nostr-sdk client.
 pub struct NostrClient {
     /// The underlying nostr-sdk client
@@ -33,6 +75,8 @@ pub struct NostrClient {
     search_relays: Vec<String>,
     /// Connection state
     connected: Arc<RwLock<bool>>,
+    /// Profile cache to avoid repeated lookups
+    profile_cache: Arc<RwLock<HashMap<PublicKey, AuthorInfo>>>,
 }
 
 impl NostrClient {
@@ -78,6 +122,7 @@ impl NostrClient {
             public_key,
             search_relays: config.search_relays,
             connected: Arc::new(RwLock::new(true)),
+            profile_cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -108,6 +153,87 @@ impl NostrClient {
         self.public_key
     }
 
+    /// Fetch profiles for a list of public keys.
+    async fn fetch_profiles(&self, pubkeys: &[PublicKey]) -> HashMap<PublicKey, AuthorInfo> {
+        let mut results = HashMap::new();
+        let mut to_fetch = Vec::new();
+
+        // Check cache first
+        {
+            let cache = self.profile_cache.read().await;
+            for pk in pubkeys {
+                if let Some(info) = cache.get(pk) {
+                    results.insert(*pk, info.clone());
+                } else {
+                    to_fetch.push(*pk);
+                }
+            }
+        }
+
+        if to_fetch.is_empty() {
+            return results;
+        }
+
+        // Fetch missing profiles
+        let filter = Filter::new()
+            .authors(to_fetch.clone())
+            .kind(Kind::Metadata)
+            .limit(to_fetch.len());
+
+        match self.client.fetch_events(vec![filter], Duration::from_secs(5)).await {
+            Ok(events) => {
+                let mut cache = self.profile_cache.write().await;
+
+                for event in events {
+                    if let Ok(metadata) = serde_json::from_str::<Metadata>(&event.content) {
+                        let author_info = AuthorInfo {
+                            pubkey: event.pubkey.to_hex(),
+                            npub: event.pubkey.to_bech32().unwrap_or_default(),
+                            name: metadata.name,
+                            display_name: metadata.display_name,
+                            picture: metadata.picture,
+                            nip05: metadata.nip05,
+                        };
+                        cache.insert(event.pubkey, author_info.clone());
+                        results.insert(event.pubkey, author_info);
+                    }
+                }
+
+                // Create default AuthorInfo for missing profiles
+                for pk in &to_fetch {
+                    if !results.contains_key(pk) {
+                        let author_info = AuthorInfo {
+                            pubkey: pk.to_hex(),
+                            npub: pk.to_bech32().unwrap_or_default(),
+                            name: None,
+                            display_name: None,
+                            picture: None,
+                            nip05: None,
+                        };
+                        results.insert(*pk, author_info);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to fetch profiles: {}", e);
+                // Create default AuthorInfo for all missing
+                for pk in &to_fetch {
+                    let author_info = AuthorInfo {
+                        pubkey: pk.to_hex(),
+                        npub: pk.to_bech32().unwrap_or_default(),
+                        name: None,
+                        display_name: None,
+                        picture: None,
+                        nip05: None,
+                    };
+                    results.insert(*pk, author_info);
+                }
+            }
+        }
+
+        results
+    }
+
     /// Posts a new note (Kind 1) with the given content.
     ///
     /// # Arguments
@@ -117,7 +243,7 @@ impl NostrClient {
     /// The event ID of the published note, or an error if publishing fails.
     pub async fn post_note(&self, content: &str) -> Result<EventId> {
         if !self.has_write_access {
-            return Err(anyhow!("Cannot post notes in read-only mode. Please set NSEC or NOSTR_SECRET_KEY environment variable."));
+            return Err(anyhow!("Cannot post notes in read-only mode. Please configure your nsec in the config file."));
         }
 
         let builder = EventBuilder::text_note(content);
@@ -135,7 +261,7 @@ impl NostrClient {
     /// * `limit` - Maximum number of notes to retrieve
     ///
     /// # Returns
-    /// A vector of notes with their metadata.
+    /// A vector of notes with their metadata including author information.
     pub async fn get_timeline(&self, limit: u64) -> Result<Vec<NoteInfo>> {
         let filter = if let Some(pk) = self.public_key {
             // Try to get contact list for personalized timeline
@@ -194,13 +320,39 @@ impl NostrClient {
             .await
             .context("Failed to fetch timeline")?;
 
+        // Collect unique public keys for profile lookup
+        let pubkeys: Vec<PublicKey> = events.iter()
+            .map(|e| e.pubkey)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        // Fetch profiles for all authors
+        let profiles = self.fetch_profiles(&pubkeys).await;
+
         let mut notes: Vec<NoteInfo> = events
             .into_iter()
-            .map(|event| NoteInfo {
-                id: event.id.to_hex(),
-                pubkey: event.pubkey.to_hex(),
-                content: event.content.clone(),
-                created_at: event.created_at.as_u64(),
+            .map(|event| {
+                let author = profiles.get(&event.pubkey).cloned().unwrap_or_else(|| {
+                    AuthorInfo {
+                        pubkey: event.pubkey.to_hex(),
+                        npub: event.pubkey.to_bech32().unwrap_or_default(),
+                        name: None,
+                        display_name: None,
+                        picture: None,
+                        nip05: None,
+                    }
+                });
+
+                NoteInfo {
+                    id: event.id.to_hex(),
+                    nevent: event.id.to_bech32().unwrap_or_default(),
+                    author,
+                    content: event.content.clone(),
+                    created_at: event.created_at.as_u64(),
+                    reactions: None,
+                    replies: None,
+                }
             })
             .collect();
 
@@ -243,13 +395,39 @@ impl NostrClient {
             .await
             .context("Failed to search notes")?;
 
+        // Collect unique public keys for profile lookup
+        let pubkeys: Vec<PublicKey> = events.iter()
+            .map(|e| e.pubkey)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        // Fetch profiles for all authors (use main client for better relay coverage)
+        let profiles = self.fetch_profiles(&pubkeys).await;
+
         let mut notes: Vec<NoteInfo> = events
             .into_iter()
-            .map(|event| NoteInfo {
-                id: event.id.to_hex(),
-                pubkey: event.pubkey.to_hex(),
-                content: event.content.clone(),
-                created_at: event.created_at.as_u64(),
+            .map(|event| {
+                let author = profiles.get(&event.pubkey).cloned().unwrap_or_else(|| {
+                    AuthorInfo {
+                        pubkey: event.pubkey.to_hex(),
+                        npub: event.pubkey.to_bech32().unwrap_or_default(),
+                        name: None,
+                        display_name: None,
+                        picture: None,
+                        nip05: None,
+                    }
+                });
+
+                NoteInfo {
+                    id: event.id.to_hex(),
+                    nevent: event.id.to_bech32().unwrap_or_default(),
+                    author,
+                    content: event.content.clone(),
+                    created_at: event.created_at.as_u64(),
+                    reactions: None,
+                    replies: None,
+                }
             })
             .collect();
 
@@ -322,17 +500,25 @@ impl NostrClient {
     }
 }
 
-/// Information about a note.
+/// Information about a note with modern display format.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NoteInfo {
     /// Event ID in hex format
     pub id: String,
-    /// Author's public key in hex format
-    pub pubkey: String,
+    /// Event ID in nevent format for linking
+    pub nevent: String,
+    /// Author information
+    pub author: AuthorInfo,
     /// Note content
     pub content: String,
     /// Unix timestamp of creation
     pub created_at: u64,
+    /// Number of reactions (optional, for future use)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reactions: Option<u64>,
+    /// Number of replies (optional, for future use)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replies: Option<u64>,
 }
 
 /// Profile information for a user.
