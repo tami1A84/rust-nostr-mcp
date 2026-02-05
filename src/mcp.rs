@@ -189,13 +189,26 @@ impl McpServer {
     /// Dispatches a method call to the appropriate handler.
     async fn dispatch_method(&mut self, method: &str, params: Value) -> Result<Value> {
         match method {
+            // Core MCP methods
             "initialize" => self.handle_initialize(params),
-            "initialized" => self.handle_initialized(),
+            "initialized" | "notifications/initialized" => self.handle_initialized(),
+
+            // Tools
             "tools/list" => self.handle_tools_list(),
             "tools/call" => self.handle_tools_call(params).await,
+
+            // Resources (empty but required for some clients)
+            "resources/list" => self.handle_resources_list(),
+            "resources/templates/list" => self.handle_resources_templates_list(),
+
+            // Prompts (empty but required for some clients)
+            "prompts/list" => self.handle_prompts_list(),
+
+            // Utility
             "ping" => Ok(json!({})),
+
             _ => {
-                error!("Unknown method: {}", method);
+                info!("Unknown method requested: {}", method);
                 Err(anyhow::anyhow!("Method not found: {}", method))
             }
         }
@@ -210,7 +223,9 @@ impl McpServer {
         Ok(json!({
             "protocolVersion": MCP_VERSION,
             "capabilities": {
-                "tools": {}
+                "tools": {},
+                "resources": {},
+                "prompts": {}
             },
             "serverInfo": {
                 "name": SERVER_NAME,
@@ -233,6 +248,33 @@ impl McpServer {
 
         Ok(json!({
             "tools": tools
+        }))
+    }
+
+    /// Handles the resources/list request.
+    /// Returns an empty list as this server doesn't provide resources.
+    fn handle_resources_list(&self) -> Result<Value> {
+        debug!("Handling resources/list request");
+        Ok(json!({
+            "resources": []
+        }))
+    }
+
+    /// Handles the resources/templates/list request.
+    /// Returns an empty list as this server doesn't provide resource templates.
+    fn handle_resources_templates_list(&self) -> Result<Value> {
+        debug!("Handling resources/templates/list request");
+        Ok(json!({
+            "resourceTemplates": []
+        }))
+    }
+
+    /// Handles the prompts/list request.
+    /// Returns an empty list as this server doesn't provide prompts.
+    fn handle_prompts_list(&self) -> Result<Value> {
+        debug!("Handling prompts/list request");
+        Ok(json!({
+            "prompts": []
         }))
     }
 
