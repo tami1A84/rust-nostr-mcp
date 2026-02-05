@@ -1,7 +1,8 @@
 //! MCP Tools Module
 //!
 //! Defines the available tools that AI agents can use to interact
-//! with the Nostr network.
+//! with the Nostr network. Tool names follow the algia convention
+//! with `nostr_` prefix for clarity.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -24,10 +25,11 @@ pub struct ToolDefinition {
 }
 
 /// Returns the list of available tools.
+/// Tool names follow the algia convention with `nostr_` prefix.
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
-            name: "post_note".to_string(),
+            name: "post_nostr_note".to_string(),
             description: "Post a new short text note (Kind 1) to the Nostr network. Requires write access (NSEC environment variable must be set).".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -41,24 +43,21 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "get_timeline".to_string(),
-            description: "Get the latest notes from the timeline. If authenticated, returns notes from followed users; otherwise, returns the global timeline.".to_string(),
+            name: "get_nostr_timeline".to_string(),
+            description: "Get the latest notes from the Nostr timeline. If authenticated, returns notes from followed users; otherwise, returns the global timeline.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of notes to retrieve (default: 20, max: 100)",
-                        "default": 20,
-                        "minimum": 1,
-                        "maximum": 100
+                        "type": "number",
+                        "description": "Maximum number of notes to retrieve (default: 20, max: 100)"
                     }
                 }
             }),
         },
         ToolDefinition {
-            name: "search_notes".to_string(),
-            description: "Search for notes containing the specified keywords using NIP-50 search-capable relays.".to_string(),
+            name: "search_nostr_notes".to_string(),
+            description: "Search for notes on the Nostr network containing the specified keywords using NIP-50 search-capable relays.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -67,28 +66,25 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                         "description": "The search query string"
                     },
                     "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (default: 20, max: 100)",
-                        "default": 20,
-                        "minimum": 1,
-                        "maximum": 100
+                        "type": "number",
+                        "description": "Maximum number of results to return (default: 20, max: 100)"
                     }
                 },
                 "required": ["query"]
             }),
         },
         ToolDefinition {
-            name: "get_profile".to_string(),
+            name: "get_nostr_profile".to_string(),
             description: "Get the profile information for a Nostr user by their public key (npub or hex format).".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "npub": {
+                    "pubkey": {
                         "type": "string",
                         "description": "The user's public key in npub (bech32) or hex format"
                     }
                 },
-                "required": ["npub"]
+                "required": ["pubkey"]
             }),
         },
     ]
@@ -118,6 +114,12 @@ impl ToolExecutor {
         info!("Executing tool: {} with arguments: {}", name, arguments);
 
         match name {
+            // New names with nostr_ prefix (algia convention)
+            "post_nostr_note" => self.post_note(arguments).await,
+            "get_nostr_timeline" => self.get_timeline(arguments).await,
+            "search_nostr_notes" => self.search_notes(arguments).await,
+            "get_nostr_profile" => self.get_profile(arguments).await,
+            // Legacy names for backward compatibility
             "post_note" => self.post_note(arguments).await,
             "get_timeline" => self.get_timeline(arguments).await,
             "search_notes" => self.search_notes(arguments).await,
@@ -150,7 +152,7 @@ impl ToolExecutor {
     async fn get_timeline(&self, arguments: Value) -> Result<Value> {
         let limit = arguments
             .get("limit")
-            .and_then(|v| v.as_u64())
+            .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
             .unwrap_or(20)
             .min(100);
 
@@ -178,7 +180,7 @@ impl ToolExecutor {
 
         let limit = arguments
             .get("limit")
-            .and_then(|v| v.as_u64())
+            .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
             .unwrap_or(20)
             .min(100);
 
@@ -196,18 +198,20 @@ impl ToolExecutor {
 
     /// Gets a user's profile.
     async fn get_profile(&self, arguments: Value) -> Result<Value> {
-        let npub = arguments
-            .get("npub")
+        // Support both "pubkey" (new) and "npub" (legacy) parameter names
+        let pubkey = arguments
+            .get("pubkey")
+            .or_else(|| arguments.get("npub"))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required argument: npub"))?;
+            .ok_or_else(|| anyhow!("Missing required argument: pubkey"))?;
 
-        if npub.is_empty() {
-            return Err(anyhow!("npub cannot be empty"));
+        if pubkey.is_empty() {
+            return Err(anyhow!("pubkey cannot be empty"));
         }
 
-        debug!("Fetching profile for: {}", npub);
+        debug!("Fetching profile for: {}", pubkey);
 
-        let profile = self.client.get_profile(npub).await?;
+        let profile = self.client.get_profile(pubkey).await?;
 
         Ok(json!({
             "success": true,

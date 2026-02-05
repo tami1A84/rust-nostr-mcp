@@ -140,7 +140,9 @@ But you cannot post notes.
 
 ## Available Tools
 
-### 1. `post_note`
+Tool names follow the [algia](https://github.com/mattn/algia) convention with `nostr_` prefix.
+
+### 1. `post_nostr_note`
 
 Post a new short text note (Kind 1) to the Nostr network.
 
@@ -152,33 +154,33 @@ Post a new short text note (Kind 1) to the Nostr network.
 **Example:**
 ```json
 {
-  "name": "post_note",
+  "name": "post_nostr_note",
   "arguments": {
     "content": "Hello, Nostr!"
   }
 }
 ```
 
-### 2. `get_timeline`
+### 2. `get_nostr_timeline`
 
 Get the latest notes from the timeline. Returns notes from followed users if authenticated, otherwise returns the global timeline.
 
 **Parameters:**
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `limit` | integer | No | 20 | Maximum number of notes (1-100) |
+| `limit` | number | No | 20 | Maximum number of notes (1-100) |
 
 **Example:**
 ```json
 {
-  "name": "get_timeline",
+  "name": "get_nostr_timeline",
   "arguments": {
     "limit": 10
   }
 }
 ```
 
-### 3. `search_notes`
+### 3. `search_nostr_notes`
 
 Search for notes containing specified keywords using NIP-50 search-capable relays.
 
@@ -186,12 +188,12 @@ Search for notes containing specified keywords using NIP-50 search-capable relay
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `query` | string | Yes | - | The search query string |
-| `limit` | integer | No | 20 | Maximum number of results (1-100) |
+| `limit` | number | No | 20 | Maximum number of results (1-100) |
 
 **Example:**
 ```json
 {
-  "name": "search_notes",
+  "name": "search_nostr_notes",
   "arguments": {
     "query": "bitcoin",
     "limit": 15
@@ -199,33 +201,33 @@ Search for notes containing specified keywords using NIP-50 search-capable relay
 }
 ```
 
-### 4. `get_profile`
+### 4. `get_nostr_profile`
 
 Get profile information for a Nostr user by their public key.
 
 **Parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `npub` | string | Yes | Public key in npub (bech32) or hex format |
+| `pubkey` | string | Yes | Public key in npub (bech32) or hex format |
 
 **Example:**
 ```json
 {
-  "name": "get_profile",
+  "name": "get_nostr_profile",
   "arguments": {
-    "npub": "npub1..."
+    "pubkey": "npub1..."
   }
 }
 ```
 
 ## Use Cases
 
-Here are some example prompts you can use with Claude:
+Here are some example prompts you can use with Claude or Goose:
 
-- "What's happening on Nostr right now?" (get_timeline)
-- "Post a note saying 'Good morning, Nostr!'" (post_note)
-- "Search for discussions about Bitcoin on Nostr" (search_notes)
-- "Who is npub1...? Get their profile." (get_profile)
+- "What's happening on Nostr right now?" (get_nostr_timeline)
+- "Post a note saying 'Good morning, Nostr!'" (post_nostr_note)
+- "Search for discussions about Bitcoin on Nostr" (search_nostr_notes)
+- "Who is npub1...? Get their profile." (get_nostr_profile)
 - "Summarize today's news from Nostr and post a summary"
 - "Post my daily report: [content]"
 
@@ -491,7 +493,9 @@ goose configure
 
 ## 利用可能なツール
 
-### 1. `post_note`
+ツール名は [algia](https://github.com/mattn/algia) の規則に従い、`nostr_` プレフィックスを使用しています。
+
+### 1. `post_nostr_note`
 
 Nostr ネットワークにショートテキストノート (Kind 1) を投稿します。
 
@@ -503,33 +507,33 @@ Nostr ネットワークにショートテキストノート (Kind 1) を投稿�
 **例:**
 ```json
 {
-  "name": "post_note",
+  "name": "post_nostr_note",
   "arguments": {
     "content": "こんにちは、Nostr！"
   }
 }
 ```
 
-### 2. `get_timeline`
+### 2. `get_nostr_timeline`
 
 タイムラインから最新のノートを取得します。認証済みの場合はフォロー中のユーザーのノート、それ以外はグローバルタイムラインを返します。
 
 **パラメータ:**
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 |------|------|------|------|------|
-| `limit` | integer | いいえ | 20 | 取得するノートの最大数 (1-100) |
+| `limit` | number | いいえ | 20 | 取得するノートの最大数 (1-100) |
 
 **例:**
 ```json
 {
-  "name": "get_timeline",
+  "name": "get_nostr_timeline",
   "arguments": {
     "limit": 10
   }
 }
 ```
 
-### 3. `search_notes`
+### 3. `search_nostr_notes`
 
 NIP-50 対応リレーを使用してキーワードでノートを検索します。
 
@@ -537,12 +541,12 @@ NIP-50 対応リレーを使用してキーワードでノートを検索しま�
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 |------|------|------|------|------|
 | `query` | string | はい | - | 検索クエリ文字列 |
-| `limit` | integer | いいえ | 20 | 結果の最大数 (1-100) |
+| `limit` | number | いいえ | 20 | 結果の最大数 (1-100) |
 
 **例:**
 ```json
 {
-  "name": "search_notes",
+  "name": "search_nostr_notes",
   "arguments": {
     "query": "ビットコイン",
     "limit": 15
@@ -550,33 +554,33 @@ NIP-50 対応リレーを使用してキーワードでノートを検索しま�
 }
 ```
 
-### 4. `get_profile`
+### 4. `get_nostr_profile`
 
 公開鍵で Nostr ユーザーのプロフィール情報を取得します。
 
 **パラメータ:**
 | 名前 | 型 | 必須 | 説明 |
 |------|------|------|------|
-| `npub` | string | はい | npub (bech32) または16進数形式の公開鍵 |
+| `pubkey` | string | はい | npub (bech32) または16進数形式の公開鍵 |
 
 **例:**
 ```json
 {
-  "name": "get_profile",
+  "name": "get_nostr_profile",
   "arguments": {
-    "npub": "npub1..."
+    "pubkey": "npub1..."
   }
 }
 ```
 
 ## 使用例
 
-Claude で使えるプロンプトの例：
+Claude や Goose で使えるプロンプトの例：
 
-- 「Nostr で今何が起きている？」 (get_timeline)
-- 「『おはようございます、Nostr！』とノートを投稿して」 (post_note)
-- 「Nostr でビットコインに関する議論を検索して」 (search_notes)
-- 「npub1... は誰？プロフィールを取得して」 (get_profile)
+- 「Nostr で今何が起きている？」 (get_nostr_timeline)
+- 「『おはようございます、Nostr！』とノートを投稿して」 (post_nostr_note)
+- 「Nostr でビットコインに関する議論を検索して」 (search_nostr_notes)
+- 「npub1... は誰？プロフィールを取得して」 (get_nostr_profile)
 - 「今日の Nostr のニュースを要約して投稿して」
 - 「日報を投稿して: [内容]」
 
