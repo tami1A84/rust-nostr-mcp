@@ -1,6 +1,6 @@
 [package]
 name = "nostr-mcp-server"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["Nostr MCP Server Contributors"]
 description = "A Model Context Protocol (MCP) server for Nostr, enabling AI agents to interact with the Nostr network"
@@ -11,7 +11,10 @@ categories = ["network-programming", "api-bindings"]
 
 [dependencies]
 # Nostr SDK for protocol handling
-nostr-sdk = "0.38"
+nostr-sdk = { version = "0.38", features = ["nip04", "nip47", "nip57", "nip59"] }
+
+# NWC (Nostr Wallet Connect) for Lightning zap payments
+nwc = "0.38"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

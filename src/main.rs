@@ -57,11 +57,17 @@ fn load_config() -> NostrClientConfig {
 
     let relays = config.read_relays();
     let search_relays = config.search_relays();
+    let nwc_uri = config.nwc_uri.clone();
+
+    if nwc_uri.is_some() {
+        info!("  - NWC (Nostr Wallet Connect): 設定済み");
+    }
 
     NostrClientConfig {
         secret_key,
         relays,
         search_relays,
+        nwc_uri,
     }
 }
 
