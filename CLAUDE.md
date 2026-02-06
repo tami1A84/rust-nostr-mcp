@@ -4,16 +4,16 @@
 
 これは Model Context Protocol (MCP) サーバーで、AI エージェントが Nostr ネットワークと対話できるようにします。秘密鍵をローカルに保存し、AI エージェントには渡さないセキュリティベストプラクティスに従っています。
 
-## 現在の機能 (v0.2.0)
+## 現在の機能 (v0.3.0)
 
 ### セキュリティ
 - **安全な鍵管理**: 秘密鍵を `~/.config/rust-nostr-mcp/config.json` に保存
 - **algia 互換設定**: algia CLI と同じ設定形式に準拠
 - **読み取り専用モード**: 秘密鍵なしでも安全に動作
 
-### ツール（既存）
+### ツール（基本）
 - `post_nostr_note` - ショートテキストノート (Kind 1) を投稿
-- `get_nostr_timeline` - 著者情報付きタイムラインを取得
+- `get_nostr_timeline` - 著者情報・リアクション数・リプライ数付きタイムラインを取得
 - `search_nostr_notes` - NIP-50 を使用してノートを検索
 - `get_nostr_profile` - ユーザープロフィール情報を取得
 
@@ -23,53 +23,18 @@
 - `save_nostr_draft` - 記事を下書き (Kind 30024) として保存
 - `get_nostr_drafts` - ユーザーの下書き記事を取得
 
+### ツール（Phase 2: タイムライン拡張）
+- `get_nostr_thread` - スレッド形式でノートとリプライを階層取得（NIP-10）
+- `react_to_note` - ノートにリアクション送信（NIP-25, Kind 7）
+- `reply_to_note` - 既存ノートに返信（NIP-10 マーカー対応）
+- `get_nostr_notifications` - メンション・リアクション通知を取得
+
 ### モダンな表示形式
 - 著者情報を含む（name、display_name、picture、nip05）
 - 相対タイムスタンプ（例: 「5分前」「2時間前」）
 - nevent リンクでの簡単な参照
 - naddr エンコーディング対応（長文記事用）
-
----
-
-## 今後の計画
-
-### Phase 2: タイムライン拡張機能
-
-#### 目標
-リアクション、リプライ、スレッディングによるタイムライン体験の向上。
-
-#### 新規ツール
-
-```
-get_nostr_thread
-- スレッド形式でノートとリプライを取得
-- パラメータ:
-  - note_id (string, 必須): イベント ID または nevent
-  - depth (number, 任意): 取得するリプライの深さ
-
-react_to_note
-- ノートにリアクション (Kind 7) を追加
-- パラメータ:
-  - note_id (string, 必須): 対象イベント ID
-  - reaction (string, 任意): リアクション絵文字（デフォルト: "+"）
-
-reply_to_note
-- 既存のノートに返信を投稿
-- パラメータ:
-  - note_id (string, 必須): 親イベント ID
-  - content (string, 必須): 返信内容
-
-get_nostr_notifications
-- ユーザーのノートへのメンションとリアクションを取得
-- パラメータ:
-  - since (number, 任意): Unix タイムスタンプ
-  - limit (number, 任意): 最大結果数
-```
-
-#### 技術的な実装
-- タイムラインのノートに対するリアクション数 (Kind 7) を取得
-- `e` タグと `p` タグを使用した適切なリプライスレッディング
-- NIP-10 マーカーサポートによるスレッディング
+- リアクション数・リプライ数のタイムライン表示
 
 ---
 
@@ -129,10 +94,10 @@ get_nostr_notifications
 | NIP-01 | 基本プロトコル | 実装済み |
 | NIP-02 | コンタクトリスト | 実装済み |
 | NIP-05 | DNS 検証 | 実装済み |
-| NIP-10 | リプライスレッディング | Phase 2 |
+| NIP-10 | リプライスレッディング | 実装済み |
 | NIP-19 | bech32 エンコーディング | 実装済み |
 | NIP-23 | 長文コンテンツ | 実装済み |
-| NIP-25 | リアクション | Phase 2 |
+| NIP-25 | リアクション | 実装済み |
 | NIP-27 | nostr: 参照 | Phase 3 |
 | NIP-50 | 検索 | 実装済み |
 | NIP-57 | Zaps | Phase 4 |
