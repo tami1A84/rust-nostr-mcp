@@ -10,6 +10,7 @@ mod config;
 mod content;
 mod mcp;
 mod mcp_apps;
+mod nip46;
 mod nostr_client;
 mod tools;
 mod ui_templates;
@@ -18,8 +19,9 @@ use anyhow::Result;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use crate::config::Config;
+use crate::config::{AuthMode, Config};
 use crate::mcp::McpServer;
+use crate::nip46::Nip46Config;
 use crate::nostr_client::NostrClientConfig;
 
 /// ログの初期化（tracing subscriber を使用）
@@ -60,16 +62,32 @@ fn load_config() -> NostrClientConfig {
     let relays = config.read_relays();
     let search_relays = config.search_relays();
     let nwc_uri = config.nwc_uri.clone();
+    let auth_mode = config.effective_auth_mode();
 
     if nwc_uri.is_some() {
         info!("  - NWC (Nostr Wallet Connect): 設定済み");
     }
+
+    // NIP-46 設定の構築
+    let nip46_config = match auth_mode {
+        AuthMode::Nip46 | AuthMode::Bunker => {
+            info!("  - 認証モード: {:?}", auth_mode);
+            Some(Nip46Config {
+                relays: config.nip46_relays.clone().unwrap_or_default(),
+                perms: config.nip46_perms.clone(),
+                bunker_uri: config.bunker_uri.clone(),
+            })
+        }
+        AuthMode::Local => None,
+    };
 
     NostrClientConfig {
         secret_key,
         relays,
         search_relays,
         nwc_uri,
+        auth_mode,
+        nip46_config,
     }
 }
 

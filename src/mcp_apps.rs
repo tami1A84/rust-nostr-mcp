@@ -102,6 +102,17 @@ const TOOL_UI_MAPPINGS: &[ToolUiMapping] = &[
         resource_name: "zap-button",
         visibility: &["model", "app"],
     },
+    // Phase 6: NIP-46 Nostr Connect
+    ToolUiMapping {
+        tool_name: "nostr_connect",
+        resource_name: "connect-qr",
+        visibility: &["model", "app"],
+    },
+    ToolUiMapping {
+        tool_name: "nostr_connect_status",
+        resource_name: "connect-qr",
+        visibility: &["model", "app"],
+    },
 ];
 
 /// クライアントが MCP Apps 拡張をサポートしているかチェックする。

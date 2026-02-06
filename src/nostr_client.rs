@@ -22,6 +22,10 @@ pub struct NostrClientConfig {
     pub search_relays: Vec<String>,
     /// Nostr Wallet Connect URI（NIP-47、Zap 送信用）
     pub nwc_uri: Option<String>,
+    /// 認証モード（Phase 6: NIP-46 対応）
+    pub auth_mode: crate::config::AuthMode,
+    /// NIP-46 セッション設定
+    pub nip46_config: Option<crate::nip46::Nip46Config>,
 }
 
 /// 著者情報（表示用）
