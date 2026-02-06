@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing::{debug, info};
 
-use crate::nostr_client::{ArticleParams, NostrClient, NoteInfo};
+use crate::nostr_client::{ArticleParams, NostrClient, NoteInfo, ThreadReply};
 
 /// 取得件数の上限
 const MAX_LIMIT: u64 = 100;
@@ -43,7 +43,7 @@ fn extract_limit(arguments: &Value) -> u64 {
 
 /// ノートを JSON 表示形式にフォーマットするヘルパー
 fn format_note_json(note: &NoteInfo) -> Value {
-    json!({
+    let mut result = json!({
         "id": note.id,
         "nevent": note.nevent,
         "author": {
@@ -58,7 +58,16 @@ fn format_note_json(note: &NoteInfo) -> Value {
         "content": note.content,
         "created_at": note.created_at,
         "formatted_time": format_timestamp(note.created_at)
-    })
+    });
+
+    if let Some(reactions) = note.reactions {
+        result["reactions"] = json!(reactions);
+    }
+    if let Some(replies) = note.replies {
+        result["replies"] = json!(replies);
+    }
+
+    result
 }
 
 /// 利用可能なツールのリストを返します。
@@ -234,6 +243,78 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 }
             }),
         },
+        // Phase 2: タイムライン拡張機能
+        ToolDefinition {
+            name: "get_nostr_thread".to_string(),
+            description: "ノートのスレッド（リプライツリー）を取得します。指定したノートとそのリプライを階層構造で返します。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "note_id": {
+                        "type": "string",
+                        "description": "対象ノートのイベント ID（hex、nevent、note 形式対応）"
+                    },
+                    "depth": {
+                        "type": "number",
+                        "description": "取得するリプライの深さ（デフォルト: 3、最大: 10）"
+                    }
+                },
+                "required": ["note_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "react_to_note".to_string(),
+            description: "ノートにリアクション (Kind 7, NIP-25) を送信します。デフォルトは「+」（いいね）です。書き込みアクセスが必要です。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "note_id": {
+                        "type": "string",
+                        "description": "リアクション対象のイベント ID（hex、nevent、note 形式対応）"
+                    },
+                    "reaction": {
+                        "type": "string",
+                        "description": "リアクション文字（デフォルト: \"+\"、絵文字も可）"
+                    }
+                },
+                "required": ["note_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "reply_to_note".to_string(),
+            description: "既存のノートに返信を投稿します（NIP-10 スレッディング対応）。書き込みアクセスが必要です。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "note_id": {
+                        "type": "string",
+                        "description": "返信先のイベント ID（hex、nevent、note 形式対応）"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "返信のテキスト内容"
+                    }
+                },
+                "required": ["note_id", "content"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_nostr_notifications".to_string(),
+            description: "自分のノートへのメンションやリアクションを取得します。認証が必要です。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "since": {
+                        "type": "number",
+                        "description": "この Unix タイムスタンプ以降の通知のみ取得（任意）"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "取得する通知の最大数（デフォルト: 20、最大: 100）"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -263,6 +344,11 @@ impl ToolExecutor {
             "get_nostr_articles" => self.get_articles(arguments).await,
             "save_nostr_draft" => self.save_draft(arguments).await,
             "get_nostr_drafts" => self.get_drafts(arguments).await,
+            // Phase 2: タイムライン拡張機能
+            "get_nostr_thread" => self.get_thread(arguments).await,
+            "react_to_note" => self.react_to_note(arguments).await,
+            "reply_to_note" => self.reply_to_note(arguments).await,
+            "get_nostr_notifications" => self.get_notifications(arguments).await,
             _ => Err(anyhow!("不明なツール: {}", name)),
         }
     }
@@ -495,6 +581,143 @@ impl ToolExecutor {
         }))
     }
 
+    // ========================================
+    // Phase 2: タイムライン拡張機能ツール
+    // ========================================
+
+    /// スレッドを取得
+    async fn get_thread(&self, arguments: Value) -> Result<Value> {
+        let note_id = arguments
+            .get("note_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("必須パラメータが不足: note_id"))?;
+
+        if note_id.is_empty() {
+            return Err(anyhow!("note_id は空にできません"));
+        }
+
+        let depth = arguments
+            .get("depth")
+            .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
+            .unwrap_or(3)
+            .min(10);
+
+        debug!("スレッド取得: note_id='{}', depth={}", note_id, depth);
+
+        let thread = self.client.get_thread(note_id, depth).await?;
+
+        let formatted_replies: Vec<Value> = thread.replies.iter()
+            .map(|reply| format_thread_reply(reply))
+            .collect();
+
+        Ok(json!({
+            "success": true,
+            "root": format_note_json(&thread.root),
+            "replies": formatted_replies,
+            "total_replies": thread.total_replies,
+            "depth": thread.depth
+        }))
+    }
+
+    /// リアクションを送信
+    async fn react_to_note(&self, arguments: Value) -> Result<Value> {
+        let note_id = arguments
+            .get("note_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("必須パラメータが不足: note_id"))?;
+
+        if note_id.is_empty() {
+            return Err(anyhow!("note_id は空にできません"));
+        }
+
+        let reaction = arguments
+            .get("reaction")
+            .and_then(|v| v.as_str())
+            .unwrap_or("+");
+
+        debug!("リアクション送信: note_id='{}', reaction='{}'", note_id, reaction);
+
+        let event_id = self.client.react_to_note(note_id, reaction).await?;
+
+        Ok(json!({
+            "success": true,
+            "event_id": event_id.to_hex(),
+            "nevent": event_id.to_bech32().unwrap_or_default(),
+            "reaction": reaction,
+            "message": format!("リアクション「{}」を送信しました。", reaction)
+        }))
+    }
+
+    /// ノートに返信
+    async fn reply_to_note(&self, arguments: Value) -> Result<Value> {
+        let note_id = arguments
+            .get("note_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("必須パラメータが不足: note_id"))?;
+
+        let content = arguments
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("必須パラメータが不足: content"))?;
+
+        if note_id.is_empty() {
+            return Err(anyhow!("note_id は空にできません"));
+        }
+        if content.is_empty() {
+            return Err(anyhow!("content は空にできません"));
+        }
+
+        debug!("返信投稿: note_id='{}'", note_id);
+
+        let event_id = self.client.reply_to_note(note_id, content).await?;
+
+        Ok(json!({
+            "success": true,
+            "event_id": event_id.to_hex(),
+            "nevent": event_id.to_bech32().unwrap_or_default(),
+            "message": "返信を投稿しました。"
+        }))
+    }
+
+    /// 通知を取得
+    async fn get_notifications(&self, arguments: Value) -> Result<Value> {
+        let since = arguments
+            .get("since")
+            .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)));
+
+        let limit = extract_limit(&arguments);
+        debug!("通知取得: since={:?}, limit={}", since, limit);
+
+        let notifications = self.client.get_notifications(since, limit).await?;
+
+        let formatted: Vec<Value> = notifications.iter().map(|n| {
+            json!({
+                "id": n.id,
+                "nevent": n.nevent,
+                "type": n.notification_type,
+                "author": {
+                    "pubkey": n.author.pubkey,
+                    "npub": n.author.npub,
+                    "name": n.author.name,
+                    "display_name": n.author.display_name,
+                    "display": n.author.display(),
+                    "picture": n.author.picture,
+                    "nip05": n.author.nip05
+                },
+                "content": n.content,
+                "target_note_id": n.target_note_id,
+                "created_at": n.created_at,
+                "formatted_time": format_timestamp(n.created_at)
+            })
+        }).collect();
+
+        Ok(json!({
+            "success": true,
+            "count": notifications.len(),
+            "notifications": formatted
+        }))
+    }
+
     /// 下書き一覧を取得
     async fn get_drafts(&self, arguments: Value) -> Result<Value> {
         let limit = extract_limit(&arguments);
@@ -524,6 +747,18 @@ impl ToolExecutor {
             "drafts": formatted
         }))
     }
+}
+
+/// スレッドリプライを再帰的に JSON にフォーマット
+fn format_thread_reply(reply: &ThreadReply) -> Value {
+    let children: Vec<Value> = reply.replies.iter()
+        .map(|r| format_thread_reply(r))
+        .collect();
+
+    json!({
+        "note": format_note_json(&reply.note),
+        "replies": children
+    })
 }
 
 /// Unix タイムスタンプを人間が読める相対時間にフォーマット

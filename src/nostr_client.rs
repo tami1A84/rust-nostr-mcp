@@ -333,7 +333,74 @@ impl NostrClient {
         let mut notes = self.events_to_notes(&events_vec, &profiles);
         Self::sort_and_truncate(&mut notes, limit as usize);
 
+        // リアクション数とリプライ数を取得
+        self.enrich_notes_with_counts(&mut notes).await;
+
         Ok(notes)
+    }
+
+    /// ノートにリアクション数とリプライ数を付与するヘルパー
+    async fn enrich_notes_with_counts(&self, notes: &mut [NoteInfo]) {
+        if notes.is_empty() {
+            return;
+        }
+
+        let event_ids: Vec<EventId> = notes.iter()
+            .filter_map(|n| EventId::from_hex(&n.id).ok())
+            .collect();
+
+        if event_ids.is_empty() {
+            return;
+        }
+
+        // リアクション (Kind 7) を一括取得
+        let reaction_filter = Filter::new()
+            .kind(Kind::Reaction)
+            .events(event_ids.clone())
+            .limit(1000);
+
+        // リプライ (Kind 1 で e タグ参照) を一括取得
+        let reply_filter = Filter::new()
+            .kind(Kind::TextNote)
+            .events(event_ids.clone())
+            .limit(1000);
+
+        let (reactions_result, replies_result) = tokio::join!(
+            self.client.fetch_events(vec![reaction_filter], Duration::from_secs(5)),
+            self.client.fetch_events(vec![reply_filter], Duration::from_secs(5))
+        );
+
+        // リアクション数をカウント
+        let mut reaction_counts: HashMap<String, u64> = HashMap::new();
+        if let Ok(events) = reactions_result {
+            for event in events {
+                for tag in event.tags.iter() {
+                    let values = tag.as_slice();
+                    if values.len() >= 2 && values[0] == "e" {
+                        *reaction_counts.entry(values[1].to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        // リプライ数をカウント
+        let mut reply_counts: HashMap<String, u64> = HashMap::new();
+        if let Ok(events) = replies_result {
+            for event in events {
+                for tag in event.tags.iter() {
+                    let values = tag.as_slice();
+                    if values.len() >= 2 && values[0] == "e" {
+                        *reply_counts.entry(values[1].to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        // ノートに付与
+        for note in notes.iter_mut() {
+            note.reactions = Some(*reaction_counts.get(&note.id).unwrap_or(&0));
+            note.replies = Some(*reply_counts.get(&note.id).unwrap_or(&0));
+        }
     }
 
     /// NIP-50 対応リレーでノートを検索します。
@@ -702,6 +769,328 @@ impl NostrClient {
         }
     }
 
+    // ========================================
+    // Phase 2: タイムライン拡張機能
+    // ========================================
+
+    /// スレッド形式でノートとリプライを取得します（NIP-10 対応）。
+    pub async fn get_thread(&self, note_id: &str, depth: u64) -> Result<ThreadInfo> {
+        let event_id = Self::parse_event_id(note_id)?;
+
+        // ルートノートを取得
+        let root_filter = Filter::new()
+            .id(event_id)
+            .limit(1);
+
+        let root_events = self.client
+            .fetch_events(vec![root_filter], Duration::from_secs(10))
+            .await
+            .context("ルートノートの取得に失敗しました")?;
+
+        let root_event = root_events
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("ノートが見つかりません: {}", note_id))?;
+
+        // リプライを取得（e タグでルートノートを参照しているイベント）
+        let reply_filter = Filter::new()
+            .kind(Kind::TextNote)
+            .event(event_id)
+            .limit(200);
+
+        let reply_events = self.client
+            .fetch_events(vec![reply_filter], Duration::from_secs(10))
+            .await
+            .context("リプライの取得に失敗しました")?;
+
+        let reply_events_vec: Vec<Event> = reply_events.into_iter().collect();
+
+        // リアクション数を取得
+        let reaction_filter = Filter::new()
+            .kind(Kind::Reaction)
+            .event(event_id)
+            .limit(500);
+
+        let reaction_count = match self.client
+            .fetch_events(vec![reaction_filter], Duration::from_secs(5))
+            .await {
+            Ok(events) => events.into_iter().count() as u64,
+            Err(_) => 0,
+        };
+
+        // プロフィールを取得
+        let mut all_events = vec![root_event.clone()];
+        all_events.extend(reply_events_vec.iter().cloned());
+        let pubkeys = Self::collect_pubkeys(&all_events);
+        let profiles = self.fetch_profiles(&pubkeys).await;
+
+        // ルートノート情報を作成
+        let root_author = profiles
+            .get(&root_event.pubkey)
+            .cloned()
+            .unwrap_or_else(|| AuthorInfo::from_public_key(&root_event.pubkey));
+
+        let root_note = NoteInfo {
+            id: root_event.id.to_hex(),
+            nevent: root_event.id.to_bech32().unwrap_or_default(),
+            author: root_author,
+            content: root_event.content.clone(),
+            created_at: root_event.created_at.as_u64(),
+            reactions: Some(reaction_count),
+            replies: Some(reply_events_vec.len() as u64),
+        };
+
+        // リプライをスレッド構造に変換
+        let replies = self.build_thread_replies(&reply_events_vec, &profiles, &event_id, depth);
+
+        Ok(ThreadInfo {
+            root: root_note,
+            replies,
+            total_replies: reply_events_vec.len() as u64,
+            depth,
+        })
+    }
+
+    /// リプライイベントからスレッド構造を構築するヘルパー
+    fn build_thread_replies(
+        &self,
+        events: &[Event],
+        profiles: &HashMap<PublicKey, AuthorInfo>,
+        parent_id: &EventId,
+        max_depth: u64,
+    ) -> Vec<ThreadReply> {
+        if max_depth == 0 {
+            return vec![];
+        }
+
+        let mut replies: Vec<ThreadReply> = events
+            .iter()
+            .filter(|event| {
+                // NIP-10: 最後の e タグが reply マーカー（親への参照）
+                event.tags.iter().any(|tag| {
+                    let values = tag.as_slice();
+                    values.len() >= 2
+                        && values[0] == "e"
+                        && values[1] == parent_id.to_hex()
+                })
+            })
+            .map(|event| {
+                let author = profiles
+                    .get(&event.pubkey)
+                    .cloned()
+                    .unwrap_or_else(|| AuthorInfo::from_public_key(&event.pubkey));
+
+                let child_replies = self.build_thread_replies(
+                    events,
+                    profiles,
+                    &event.id,
+                    max_depth - 1,
+                );
+
+                ThreadReply {
+                    note: NoteInfo {
+                        id: event.id.to_hex(),
+                        nevent: event.id.to_bech32().unwrap_or_default(),
+                        author,
+                        content: event.content.clone(),
+                        created_at: event.created_at.as_u64(),
+                        reactions: None,
+                        replies: Some(child_replies.len() as u64),
+                    },
+                    replies: child_replies,
+                }
+            })
+            .collect();
+
+        replies.sort_by(|a, b| a.note.created_at.cmp(&b.note.created_at));
+        replies
+    }
+
+    /// ノートにリアクション (Kind 7, NIP-25) を送信します。
+    pub async fn react_to_note(&self, note_id: &str, reaction: &str) -> Result<EventId> {
+        self.require_write_access()?;
+
+        let event_id = Self::parse_event_id(note_id)?;
+
+        // リアクション対象のノートを取得して著者の公開鍵を得る
+        let filter = Filter::new()
+            .id(event_id)
+            .limit(1);
+
+        let events = self.client
+            .fetch_events(vec![filter], Duration::from_secs(5))
+            .await
+            .context("リアクション対象のノートの取得に失敗しました")?;
+
+        let target_event = events
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("リアクション対象のノートが見つかりません: {}", note_id))?;
+
+        // NIP-25: リアクションイベントを作成
+        let builder = EventBuilder::new(Kind::Reaction, reaction)
+            .tags(vec![
+                Tag::event(event_id),
+                Tag::public_key(target_event.pubkey),
+            ]);
+
+        let output = self.client.send_event_builder(builder).await
+            .context("リアクションの送信に失敗しました")?;
+
+        let reaction_id = *output.id();
+        info!("リアクションを送信しました。イベント ID: {}", reaction_id);
+        Ok(reaction_id)
+    }
+
+    /// 既存のノートに返信を投稿します（NIP-10 対応）。
+    pub async fn reply_to_note(&self, note_id: &str, content: &str) -> Result<EventId> {
+        self.require_write_access()?;
+
+        let event_id = Self::parse_event_id(note_id)?;
+
+        // 返信対象のノートを取得
+        let filter = Filter::new()
+            .id(event_id)
+            .limit(1);
+
+        let events = self.client
+            .fetch_events(vec![filter], Duration::from_secs(5))
+            .await
+            .context("返信対象のノートの取得に失敗しました")?;
+
+        let target_event = events
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("返信対象のノートが見つかりません: {}", note_id))?;
+
+        // NIP-10: root と reply のマーカーを設定
+        // 対象ノート自体にルートがある場合はそれを引き継ぐ
+        let mut tags = Vec::new();
+
+        // ルートイベントの検出
+        let root_id = target_event.tags.iter().find_map(|tag| {
+            let values = tag.as_slice();
+            if values.len() >= 4 && values[0] == "e" && values[3] == "root" {
+                EventId::from_hex(&values[1]).ok()
+            } else {
+                None
+            }
+        });
+
+        if let Some(root) = root_id {
+            // 既存スレッドへの返信: root を引き継ぎ、対象ノートを reply とする
+            tags.push(Tag::parse(vec!["e".to_string(), root.to_hex(), String::new(), "root".to_string()]).unwrap());
+            tags.push(Tag::parse(vec!["e".to_string(), event_id.to_hex(), String::new(), "reply".to_string()]).unwrap());
+        } else {
+            // 新規スレッド開始: 対象ノートが root かつ reply
+            tags.push(Tag::parse(vec!["e".to_string(), event_id.to_hex(), String::new(), "root".to_string()]).unwrap());
+            tags.push(Tag::parse(vec!["e".to_string(), event_id.to_hex(), String::new(), "reply".to_string()]).unwrap());
+        }
+
+        // 対象ノートの著者を p タグで追加
+        tags.push(Tag::public_key(target_event.pubkey));
+
+        let builder = EventBuilder::text_note(content)
+            .tags(tags);
+
+        let output = self.client.send_event_builder(builder).await
+            .context("返信の投稿に失敗しました")?;
+
+        let reply_id = *output.id();
+        info!("返信を投稿しました。イベント ID: {}", reply_id);
+        Ok(reply_id)
+    }
+
+    /// ユーザーへのメンションとリアクションの通知を取得します。
+    pub async fn get_notifications(&self, since: Option<u64>, limit: u64) -> Result<Vec<NotificationInfo>> {
+        let pk = self.public_key
+            .ok_or_else(|| anyhow!("通知の取得には認証が必要です。設定ファイルに nsec を設定してください。"))?;
+
+        // メンション（p タグで自分を参照しているテキストノート）
+        let mut mention_filter = Filter::new()
+            .kind(Kind::TextNote)
+            .pubkey(pk)
+            .limit(limit as usize);
+
+        if let Some(since_ts) = since {
+            mention_filter = mention_filter.since(Timestamp::from(since_ts));
+        }
+
+        // リアクション（p タグで自分を参照しているリアクション）
+        let mut reaction_filter = Filter::new()
+            .kind(Kind::Reaction)
+            .pubkey(pk)
+            .limit(limit as usize);
+
+        if let Some(since_ts) = since {
+            reaction_filter = reaction_filter.since(Timestamp::from(since_ts));
+        }
+
+        let events = self.client
+            .fetch_events(vec![mention_filter, reaction_filter], Duration::from_secs(15))
+            .await
+            .context("通知の取得に失敗しました")?;
+
+        let events_vec: Vec<Event> = events.into_iter()
+            .filter(|e| e.pubkey != pk) // 自分自身の投稿を除外
+            .collect();
+
+        let pubkeys = Self::collect_pubkeys(&events_vec);
+        let profiles = self.fetch_profiles(&pubkeys).await;
+
+        let mut notifications: Vec<NotificationInfo> = events_vec.iter().map(|event| {
+            let author = profiles
+                .get(&event.pubkey)
+                .cloned()
+                .unwrap_or_else(|| AuthorInfo::from_public_key(&event.pubkey));
+
+            let notification_type = match event.kind {
+                Kind::Reaction => "reaction".to_string(),
+                Kind::TextNote => "mention".to_string(),
+                _ => "other".to_string(),
+            };
+
+            // リアクションの場合、対象ノートの ID を取得
+            let target_note_id = event.tags.iter().find_map(|tag| {
+                let values = tag.as_slice();
+                if values.len() >= 2 && values[0] == "e" {
+                    Some(values[1].to_string())
+                } else {
+                    None
+                }
+            });
+
+            NotificationInfo {
+                id: event.id.to_hex(),
+                nevent: event.id.to_bech32().unwrap_or_default(),
+                notification_type,
+                author,
+                content: event.content.clone(),
+                target_note_id,
+                created_at: event.created_at.as_u64(),
+            }
+        }).collect();
+
+        notifications.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        notifications.truncate(limit as usize);
+
+        Ok(notifications)
+    }
+
+    /// イベント ID 文字列をパース（nevent、note、hex 対応）
+    fn parse_event_id(id_str: &str) -> Result<EventId> {
+        let id_str = id_str.trim();
+        if id_str.starts_with("nevent") {
+            let nip19 = Nip19Event::from_bech32(id_str)
+                .context("無効な nevent 形式です")?;
+            Ok(nip19.event_id)
+        } else if id_str.starts_with("note") {
+            EventId::from_bech32(id_str).context("無効な note 形式です")
+        } else {
+            EventId::from_hex(id_str).context("無効な hex イベント ID です")
+        }
+    }
+
     /// すべてのリレーから切断します。
     pub async fn disconnect(&self) {
         let _ = self.client.disconnect().await;
@@ -758,6 +1147,48 @@ pub struct ProfileInfo {
     pub lud16: Option<String>,
     /// ウェブサイト URL
     pub website: Option<String>,
+}
+
+/// スレッド情報（Phase 2）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ThreadInfo {
+    /// ルートノート
+    pub root: NoteInfo,
+    /// リプライ一覧（ネスト構造）
+    pub replies: Vec<ThreadReply>,
+    /// リプライの総数
+    pub total_replies: u64,
+    /// 取得したリプライの深さ
+    pub depth: u64,
+}
+
+/// スレッドのリプライ（ネスト可能）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ThreadReply {
+    /// リプライノート
+    pub note: NoteInfo,
+    /// さらにネストされたリプライ
+    pub replies: Vec<ThreadReply>,
+}
+
+/// 通知情報（Phase 2）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NotificationInfo {
+    /// hex 形式のイベント ID
+    pub id: String,
+    /// nevent 形式のイベント ID
+    pub nevent: String,
+    /// 通知の種類（"mention" または "reaction"）
+    pub notification_type: String,
+    /// 通知元の著者情報
+    pub author: AuthorInfo,
+    /// コンテンツ（リアクションの場合は絵文字、メンションの場合はノート内容）
+    pub content: String,
+    /// リアクション対象のノート ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_note_id: Option<String>,
+    /// 作成日時の Unix タイムスタンプ
+    pub created_at: u64,
 }
 
 /// 記事投稿のパラメータ
