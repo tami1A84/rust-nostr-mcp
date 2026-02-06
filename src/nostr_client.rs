@@ -482,6 +482,74 @@ impl NostrClient {
     }
 
     // ========================================
+    // Phase 3: プロフィール統計情報
+    // ========================================
+
+    /// ユーザーのプロフィール統計情報（フォロー数・フォロワー数・ノート数）を取得します。
+    pub async fn get_profile_stats(&self, pubkey_str: &str) -> Result<ProfileStats> {
+        let public_key = Self::parse_public_key(pubkey_str)?;
+
+        // フォロー数: Kind 3 (ContactList) の p タグ数
+        let contact_filter = Filter::new()
+            .author(public_key)
+            .kind(Kind::ContactList)
+            .limit(1);
+
+        // ノート数: Kind 1 の件数（上限付き）
+        let notes_filter = Filter::new()
+            .author(public_key)
+            .kind(Kind::TextNote)
+            .limit(5000);
+
+        // フォロワー数: Kind 3 で対象ユーザーを p タグで参照しているイベント
+        let followers_filter = Filter::new()
+            .kind(Kind::ContactList)
+            .pubkey(public_key)
+            .limit(5000);
+
+        let (contacts_result, notes_result, followers_result) = tokio::join!(
+            self.client.fetch_events(vec![contact_filter], Duration::from_secs(10)),
+            self.client.fetch_events(vec![notes_filter], Duration::from_secs(10)),
+            self.client.fetch_events(vec![followers_filter], Duration::from_secs(10))
+        );
+
+        // フォロー数
+        let following = contacts_result
+            .ok()
+            .and_then(|events| events.into_iter().next())
+            .map(|event| {
+                event.tags.iter()
+                    .filter(|tag| {
+                        let values = tag.as_slice();
+                        values.len() >= 2 && values[0] == "p"
+                    })
+                    .count() as u64
+            })
+            .unwrap_or(0);
+
+        // ノート数
+        let notes = notes_result
+            .map(|events| events.into_iter().count() as u64)
+            .unwrap_or(0);
+
+        // フォロワー数（ユニークな著者のみカウント）
+        let followers = followers_result
+            .map(|events| {
+                events.into_iter()
+                    .map(|e| e.pubkey)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len() as u64
+            })
+            .unwrap_or(0);
+
+        Ok(ProfileStats {
+            following,
+            followers,
+            notes,
+        })
+    }
+
+    // ========================================
     // Phase 1: NIP-23 長文コンテンツサポート
     // ========================================
 
@@ -1147,6 +1215,17 @@ pub struct ProfileInfo {
     pub lud16: Option<String>,
     /// ウェブサイト URL
     pub website: Option<String>,
+}
+
+/// プロフィール統計情報（Phase 3: プロフィールカード用）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProfileStats {
+    /// フォロー中の数
+    pub following: u64,
+    /// フォロワー数（推定値、リレーの対応状況に依存）
+    pub followers: u64,
+    /// ノート投稿数（推定値）
+    pub notes: u64,
 }
 
 /// スレッド情報（Phase 2）

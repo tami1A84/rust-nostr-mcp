@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing::{debug, info};
 
+use crate::content;
 use crate::nostr_client::{ArticleParams, NostrClient, NoteInfo, ThreadReply};
 
 /// 取得件数の上限
@@ -41,8 +42,17 @@ fn extract_limit(arguments: &Value) -> u64 {
         .min(MAX_LIMIT)
 }
 
-/// ノートを JSON 表示形式にフォーマットするヘルパー
+/// ノートを JSON 表示形式にフォーマットするヘルパー（Phase 3: 構造化表示対応）
 fn format_note_json(note: &NoteInfo) -> Value {
+    let formatted_time = format_timestamp(note.created_at);
+
+    // Phase 3: display_card の構築
+    let header = format_display_card_header(&note.author);
+    let footer = format_display_card_footer(note.reactions, note.replies, &formatted_time);
+
+    // Phase 3: コンテンツ解析（メディア・ハッシュタグ・Nostr 参照）
+    let parsed = content::parse_content(&note.content);
+
     let mut result = json!({
         "id": note.id,
         "nevent": note.nevent,
@@ -57,7 +67,12 @@ fn format_note_json(note: &NoteInfo) -> Value {
         },
         "content": note.content,
         "created_at": note.created_at,
-        "formatted_time": format_timestamp(note.created_at)
+        "formatted_time": formatted_time,
+        "display_card": {
+            "header": header,
+            "content": note.content,
+            "footer": footer
+        }
     });
 
     if let Some(reactions) = note.reactions {
@@ -67,7 +82,50 @@ fn format_note_json(note: &NoteInfo) -> Value {
         result["replies"] = json!(replies);
     }
 
+    // Phase 3: メディア・解析済みコンテンツを追加（空でない場合のみ）
+    if !parsed.media.is_empty() {
+        result["media"] = json!(parsed.media);
+    }
+    if !parsed.is_empty() {
+        result["parsed_content"] = json!({});
+        if !parsed.hashtags.is_empty() {
+            result["parsed_content"]["hashtags"] = json!(parsed.hashtags);
+        }
+        if !parsed.references.is_empty() {
+            result["parsed_content"]["references"] = json!(parsed.references);
+        }
+    }
+
     result
+}
+
+/// display_card のヘッダーを生成（"表示名 (@nip05)" 形式）
+fn format_display_card_header(author: &crate::nostr_client::AuthorInfo) -> String {
+    let display = author.display();
+    if let Some(ref nip05) = author.nip05 {
+        format!("{} (@{})", display, nip05)
+    } else {
+        format!("{} ({})", display, author.short_npub())
+    }
+}
+
+/// display_card のフッターを生成（"N リアクション · N リプライ · 時間" 形式）
+fn format_display_card_footer(reactions: Option<u64>, replies: Option<u64>, formatted_time: &str) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(r) = reactions {
+        if r > 0 {
+            parts.push(format!("{} リアクション", r));
+        }
+    }
+    if let Some(r) = replies {
+        if r > 0 {
+            parts.push(format!("{} リプライ", r));
+        }
+    }
+    parts.push(formatted_time.to_string());
+
+    parts.join(" · ")
 }
 
 /// 利用可能なツールのリストを返します。
@@ -414,7 +472,7 @@ impl ToolExecutor {
         }))
     }
 
-    /// プロフィールを取得
+    /// プロフィールを取得（Phase 3: プロフィールカード・統計情報付き）
     async fn get_profile(&self, arguments: Value) -> Result<Value> {
         let pubkey = arguments
             .get("pubkey")
@@ -428,11 +486,46 @@ impl ToolExecutor {
 
         debug!("プロフィール取得: {}", pubkey);
 
-        let profile = self.client.get_profile(pubkey).await?;
+        // プロフィールと統計情報を並行取得
+        let (profile_result, stats_result) = tokio::join!(
+            self.client.get_profile(pubkey),
+            self.client.get_profile_stats(pubkey)
+        );
+
+        let profile = profile_result?;
+
+        // Phase 3: プロフィールカードの構築
+        let display_name = profile.display_name.as_ref()
+            .or(profile.name.as_ref())
+            .cloned()
+            .unwrap_or_else(|| {
+                if profile.npub.len() > 16 {
+                    format!("{}...{}", &profile.npub[..12], &profile.npub[profile.npub.len()-4..])
+                } else {
+                    profile.npub.clone()
+                }
+            });
+
+        let mut profile_card = json!({
+            "avatar": profile.picture,
+            "name": display_name,
+            "nip05": profile.nip05,
+            "bio": profile.about
+        });
+
+        // 統計情報を追加（取得に成功した場合のみ）
+        if let Ok(stats) = stats_result {
+            profile_card["stats"] = json!({
+                "following": stats.following,
+                "followers": stats.followers,
+                "notes": stats.notes
+            });
+        }
 
         Ok(json!({
             "success": true,
-            "profile": profile
+            "profile": profile,
+            "profile_card": profile_card
         }))
     }
 
@@ -488,7 +581,7 @@ impl ToolExecutor {
         }))
     }
 
-    /// 長文記事を取得
+    /// 長文記事を取得（Phase 3: コンテンツ解析付き）
     async fn get_articles(&self, arguments: Value) -> Result<Value> {
         let author = arguments.get("author").and_then(|v| v.as_str());
         let tags: Option<Vec<String>> = arguments.get("tags").and_then(|v| {
@@ -507,22 +600,7 @@ impl ToolExecutor {
         ).await?;
 
         let formatted: Vec<Value> = articles.iter().map(|article| {
-            json!({
-                "id": article.id,
-                "nevent": article.nevent,
-                "naddr": article.naddr,
-                "identifier": article.identifier,
-                "title": article.title,
-                "summary": article.summary,
-                "image": article.image,
-                "content": article.content,
-                "author": article.author,
-                "published_at": article.published_at,
-                "created_at": article.created_at,
-                "formatted_time": format_timestamp(article.created_at),
-                "tags": article.tags,
-                "is_draft": article.is_draft
-            })
+            format_article_json(article)
         }).collect();
 
         Ok(json!({
@@ -718,7 +796,7 @@ impl ToolExecutor {
         }))
     }
 
-    /// 下書き一覧を取得
+    /// 下書き一覧を取得（Phase 3: コンテンツ解析付き）
     async fn get_drafts(&self, arguments: Value) -> Result<Value> {
         let limit = extract_limit(&arguments);
         debug!("下書き取得: limit={}", limit);
@@ -726,19 +804,7 @@ impl ToolExecutor {
         let drafts = self.client.get_drafts(limit).await?;
 
         let formatted: Vec<Value> = drafts.iter().map(|article| {
-            json!({
-                "id": article.id,
-                "nevent": article.nevent,
-                "naddr": article.naddr,
-                "identifier": article.identifier,
-                "title": article.title,
-                "summary": article.summary,
-                "content": article.content,
-                "created_at": article.created_at,
-                "formatted_time": format_timestamp(article.created_at),
-                "tags": article.tags,
-                "is_draft": true
-            })
+            format_article_json(article)
         }).collect();
 
         Ok(json!({
@@ -747,6 +813,48 @@ impl ToolExecutor {
             "drafts": formatted
         }))
     }
+}
+
+/// 記事を JSON 表示形式にフォーマットするヘルパー（Phase 3: コンテンツ解析対応）
+fn format_article_json(article: &crate::nostr_client::ArticleInfo) -> Value {
+    let formatted_time = format_timestamp(article.created_at);
+    let parsed = content::parse_content(&article.content);
+
+    let mut result = json!({
+        "id": article.id,
+        "nevent": article.nevent,
+        "naddr": article.naddr,
+        "identifier": article.identifier,
+        "title": article.title,
+        "summary": article.summary,
+        "image": article.image,
+        "content": article.content,
+        "author": article.author,
+        "published_at": article.published_at,
+        "created_at": article.created_at,
+        "formatted_time": formatted_time,
+        "tags": article.tags,
+        "is_draft": article.is_draft
+    });
+
+    // Phase 3: メディア検出
+    if !parsed.media.is_empty() {
+        result["media"] = json!(parsed.media);
+    }
+
+    // Phase 3: コンテンツ解析結果
+    if !parsed.is_empty() {
+        let mut parsed_content = json!({});
+        if !parsed.hashtags.is_empty() {
+            parsed_content["hashtags"] = json!(parsed.hashtags);
+        }
+        if !parsed.references.is_empty() {
+            parsed_content["references"] = json!(parsed.references);
+        }
+        result["parsed_content"] = parsed_content;
+    }
+
+    result
 }
 
 /// スレッドリプライを再帰的に JSON にフォーマット

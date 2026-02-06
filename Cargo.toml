@@ -1,6 +1,6 @@
 [package]
 name = "nostr-mcp-server"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["Nostr MCP Server Contributors"]
 description = "A Model Context Protocol (MCP) server for Nostr, enabling AI agents to interact with the Nostr network"
@@ -38,6 +38,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async traits
 async-trait = "0.1"
+
+# Regex for content parsing
+regex = "1"
 
 [profile.release]
 opt-level = 3
