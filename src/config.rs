@@ -31,6 +31,24 @@ impl Default for RelayConfig {
     }
 }
 
+/// 認証モード
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMode {
+    /// 従来のローカル秘密鍵（デフォルト）
+    Local,
+    /// NIP-46 Nostr Connect リモートサイニング
+    Nip46,
+    /// bunker:// URI 指定
+    Bunker,
+}
+
+impl Default for AuthMode {
+    fn default() -> Self {
+        Self::Local
+    }
+}
+
 /// algia 規則に準拠したメイン設定構造体
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -43,6 +61,22 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "nwc-uri")]
     pub nwc_uri: Option<String>,
+    /// 認証モード: "local"（デフォルト）、"nip46"、"bunker"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "auth-mode")]
+    pub auth_mode: Option<AuthMode>,
+    /// bunker:// URI（バンカー方式の場合）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "bunker-uri")]
+    pub bunker_uri: Option<String>,
+    /// NIP-46 通信用リレー
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nip46-relays")]
+    pub nip46_relays: Option<Vec<String>>,
+    /// NIP-46 要求権限（カンマ区切り: "sign_event:1,sign_event:7,nip44_encrypt"）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nip46-perms")]
+    pub nip46_perms: Option<String>,
 }
 
 impl Default for Config {
@@ -74,6 +108,10 @@ impl Default for Config {
             relays,
             privatekey: None,
             nwc_uri: None,
+            auth_mode: None,
+            bunker_uri: None,
+            nip46_relays: None,
+            nip46_perms: None,
         }
     }
 }
@@ -190,6 +228,19 @@ impl Config {
             .filter(|(_, c)| c.write)
             .map(|(url, _)| url.clone())
             .collect()
+    }
+
+    /// 有効な認証モードを取得（未指定の場合はデフォルト判定）
+    pub fn effective_auth_mode(&self) -> AuthMode {
+        if let Some(ref mode) = self.auth_mode {
+            return mode.clone();
+        }
+        // auth-mode 未指定の場合、bunker-uri があれば Bunker、そうでなければ Local
+        if self.bunker_uri.is_some() {
+            AuthMode::Bunker
+        } else {
+            AuthMode::Local
+        }
     }
 
     /// 検索有効なリレー URL を取得

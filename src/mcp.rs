@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
+use crate::config::AuthMode;
 use crate::mcp_apps;
+use crate::nip46::{Nip46Config, Nip46Session};
 use crate::nostr_client::{NostrClient, NostrClientConfig};
 use crate::tools::{get_tool_definitions, ToolExecutor};
 
@@ -88,19 +90,44 @@ pub struct McpServer {
     initialized: bool,
     /// クライアントが MCP Apps UI 拡張をサポートしているか
     ui_enabled: bool,
+    /// NIP-46 セッション（Phase 6）
+    /// McpServer が nip46_session の所有権を保持（ToolExecutor と共有）
+    #[allow(dead_code)]
+    nip46_session: Arc<Nip46Session>,
 }
 
 impl McpServer {
     /// 指定された設定で新しい MCP サーバーを作成します。
     pub async fn new(config: NostrClientConfig) -> Result<Self> {
+        // NIP-46 セッションを構築
+        let nip46_config = config.nip46_config.clone().unwrap_or(Nip46Config {
+            relays: vec![],
+            perms: None,
+            bunker_uri: None,
+        });
+        let nip46_session = Arc::new(Nip46Session::new(nip46_config));
+
+        // バンカー方式の場合は起動時に自動接続
+        if config.auth_mode == AuthMode::Bunker {
+            if let Some(ref nip46_cfg) = config.nip46_config {
+                if let Some(ref bunker_uri) = nip46_cfg.bunker_uri {
+                    info!("NIP-46 バンカー方式で自動接続を開始...");
+                    if let Err(e) = nip46_session.start_bunker_connect(bunker_uri).await {
+                        warn!("NIP-46 バンカー接続に失敗: {}。ローカルモードにフォールバックします。", e);
+                    }
+                }
+            }
+        }
+
         let client = Arc::new(NostrClient::new(config).await?);
-        let tool_executor = ToolExecutor::new(Arc::clone(&client));
+        let tool_executor = ToolExecutor::new(Arc::clone(&client), Arc::clone(&nip46_session));
 
         Ok(Self {
             client,
             tool_executor,
             initialized: false,
             ui_enabled: false,
+            nip46_session,
         })
     }
 

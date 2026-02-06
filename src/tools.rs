@@ -15,6 +15,7 @@ use tracing::{debug, info};
 
 use crate::content;
 use crate::mcp_apps;
+use crate::nip46::Nip46Session;
 use crate::nostr_client::{ArticleParams, DirectMessageInfo, NostrClient, NoteInfo, ThreadReply};
 
 /// 取得件数の上限
@@ -493,6 +494,39 @@ pub fn get_tool_definitions(ui_enabled: bool) -> Vec<ToolDefinition> {
             }),
             meta: meta("get_relay_list"),
         },
+        // Phase 6: NIP-46 Nostr Connect（リモートサイニング）
+        ToolDefinition {
+            name: "nostr_connect".to_string(),
+            description: "NIP-46 Nostr Connect を使用してリモートサイナー（Primal、Amber 等）との接続を開始します。QR コードを生成し、スキャンすることでログインできます。bunker:// URI を指定することもできます。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "bunker_uri": {
+                        "type": "string",
+                        "description": "bunker:// URI（任意。指定しない場合は QR コードを生成）"
+                    }
+                }
+            }),
+            meta: meta("nostr_connect"),
+        },
+        ToolDefinition {
+            name: "nostr_connect_status".to_string(),
+            description: "NIP-46 リモートサイナーの接続状態を確認します。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            meta: meta("nostr_connect_status"),
+        },
+        ToolDefinition {
+            name: "nostr_disconnect".to_string(),
+            description: "NIP-46 リモートサイナーとの接続を切断します。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            meta: meta("nostr_disconnect"),
+        },
     ]
 }
 
@@ -500,12 +534,17 @@ pub fn get_tool_definitions(ui_enabled: bool) -> Vec<ToolDefinition> {
 pub struct ToolExecutor {
     /// Nostr クライアントインスタンス
     client: Arc<NostrClient>,
+    /// NIP-46 セッション（Phase 6）
+    nip46_session: Arc<Nip46Session>,
 }
 
 impl ToolExecutor {
     /// 新しいツールエグゼキュータを作成
-    pub fn new(client: Arc<NostrClient>) -> Self {
-        Self { client }
+    pub fn new(client: Arc<NostrClient>, nip46_session: Arc<Nip46Session>) -> Self {
+        Self {
+            client,
+            nip46_session,
+        }
     }
 
     /// 指定されたツールを引数付きで実行します。
@@ -533,6 +572,10 @@ impl ToolExecutor {
             "send_dm" => self.send_dm(arguments).await,
             "get_dms" => self.get_dms(arguments).await,
             "get_relay_list" => self.get_relay_list(arguments).await,
+            // Phase 6: NIP-46 Nostr Connect
+            "nostr_connect" => self.nostr_connect(arguments).await,
+            "nostr_connect_status" => self.nostr_connect_status().await,
+            "nostr_disconnect" => self.nostr_disconnect().await,
             _ => Err(anyhow!("不明なツール: {}", name)),
         }
     }
@@ -1085,6 +1128,68 @@ impl ToolExecutor {
             "success": true,
             "count": messages.len(),
             "messages": formatted
+        }))
+    }
+
+    // ========================================
+    // Phase 6: NIP-46 Nostr Connect ツール
+    // ========================================
+
+    /// NIP-46 接続を開始（QR コード生成またはバンカー接続）
+    async fn nostr_connect(&self, arguments: Value) -> Result<Value> {
+        let bunker_uri = arguments
+            .get("bunker_uri")
+            .and_then(|v| v.as_str());
+
+        if let Some(uri) = bunker_uri {
+            // バンカー方式
+            debug!("NIP-46 バンカー接続: {}", uri);
+            self.nip46_session.start_bunker_connect(uri).await?;
+
+            let status = self.nip46_session.status_json().await;
+            Ok(json!({
+                "success": true,
+                "mode": "bunker",
+                "status": status["status"],
+                "message": "NIP-46 バンカー接続が完了しました。",
+                "user_pubkey": status.get("user_pubkey"),
+                "user_npub": status.get("user_npub")
+            }))
+        } else {
+            // クライアント発行方式: QR コード生成
+            debug!("NIP-46 クライアント接続開始（QR コード生成）");
+            let result = self.nip46_session.start_client_connect().await?;
+
+            Ok(json!({
+                "success": true,
+                "mode": "client",
+                "status": "waiting",
+                "message": "QR コードをリモートサイナーアプリ（Primal、Amber 等）でスキャンしてください。",
+                "connect_uri": result.connect_uri,
+                "qr_base64": result.qr_base64
+            }))
+        }
+    }
+
+    /// NIP-46 接続ステータスを確認
+    async fn nostr_connect_status(&self) -> Result<Value> {
+        debug!("NIP-46 接続ステータス確認");
+        let status = self.nip46_session.status_json().await;
+
+        Ok(json!({
+            "success": true,
+            "connection": status
+        }))
+    }
+
+    /// NIP-46 リモートサイナーとの接続を切断
+    async fn nostr_disconnect(&self) -> Result<Value> {
+        debug!("NIP-46 切断");
+        self.nip46_session.disconnect().await?;
+
+        Ok(json!({
+            "success": true,
+            "message": "NIP-46 リモートサイナーとの接続を切断しました。"
         }))
     }
 
