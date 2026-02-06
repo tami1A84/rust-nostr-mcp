@@ -2,6 +2,9 @@
 //!
 //! JSON-RPC over stdio を使用した Model Context Protocol (MCP) サーバーの実装です。
 //! Claude などの AI エージェントが Nostr ネットワークと通信できるようにします。
+//!
+//! MCP Apps (SEP-1865) 拡張をサポートし、ツール実行結果を
+//! リッチ UI で表示するための `ui://` リソースを提供します。
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -10,6 +13,7 @@ use std::io::{BufRead, Write};
 use std::sync::Arc;
 use tracing::{debug, error, info};
 
+use crate::mcp_apps;
 use crate::nostr_client::{NostrClient, NostrClientConfig};
 use crate::tools::{get_tool_definitions, ToolExecutor};
 
@@ -82,6 +86,8 @@ pub struct McpServer {
     tool_executor: ToolExecutor,
     /// サーバーが初期化済みかどうか
     initialized: bool,
+    /// クライアントが MCP Apps UI 拡張をサポートしているか
+    ui_enabled: bool,
 }
 
 impl McpServer {
@@ -94,6 +100,7 @@ impl McpServer {
             client,
             tool_executor,
             initialized: false,
+            ui_enabled: false,
         })
     }
 
@@ -189,8 +196,9 @@ impl McpServer {
             "tools/list" => self.handle_tools_list(),
             "tools/call" => self.handle_tools_call(params).await,
 
-            // リソース（一部クライアントで必要）
+            // リソース
             "resources/list" => self.handle_resources_list(),
+            "resources/read" => self.handle_resources_read(params),
             "resources/templates/list" => self.handle_resources_templates_list(),
 
             // プロンプト（一部クライアントで必要）
@@ -206,11 +214,21 @@ impl McpServer {
         }
     }
 
-    /// initialize リクエストを処理
-    fn handle_initialize(&mut self, _params: Value) -> Result<Value> {
+    /// initialize リクエストを処理。
+    /// クライアントが MCP Apps 拡張（`io.modelcontextprotocol/ui`）を
+    /// サポートしている場合、UI リソースを有効化します。
+    fn handle_initialize(&mut self, params: Value) -> Result<Value> {
         info!("initialize リクエストを処理中");
 
         self.initialized = true;
+
+        // クライアントの MCP Apps サポートを検出
+        self.ui_enabled = mcp_apps::client_supports_ui(&params);
+        if self.ui_enabled {
+            info!("クライアントは MCP Apps UI 拡張をサポートしています");
+        } else {
+            debug!("クライアントは MCP Apps UI 拡張をサポートしていません");
+        }
 
         Ok(json!({
             "protocolVersion": MCP_VERSION,
@@ -232,23 +250,60 @@ impl McpServer {
         Ok(json!({}))
     }
 
-    /// tools/list リクエストを処理
+    /// tools/list リクエストを処理。
+    /// MCP Apps 対応クライアントには `_meta.ui` 付きのツール定義を返します。
     fn handle_tools_list(&self) -> Result<Value> {
-        info!("tools/list リクエストを処理中");
+        info!("tools/list リクエストを処理中 (ui_enabled={})", self.ui_enabled);
 
-        let tools = get_tool_definitions();
+        let tools = get_tool_definitions(self.ui_enabled);
 
         Ok(json!({
             "tools": tools
         }))
     }
 
-    /// resources/list リクエストを処理（空のリストを返す）
+    /// resources/list リクエストを処理。
+    /// MCP Apps 対応クライアントには UI リソースを返します。
     fn handle_resources_list(&self) -> Result<Value> {
         debug!("resources/list リクエストを処理中");
-        Ok(json!({
-            "resources": []
-        }))
+
+        if self.ui_enabled {
+            let resources = mcp_apps::get_ui_resources();
+            info!("UI リソース {} 件を返却", resources.len());
+            Ok(json!({
+                "resources": resources
+            }))
+        } else {
+            Ok(json!({
+                "resources": []
+            }))
+        }
+    }
+
+    /// resources/read リクエストを処理。
+    /// `ui://` スキームの URI に対してテンプレート HTML を返します。
+    fn handle_resources_read(&self, params: Value) -> Result<Value> {
+        let uri = params
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("URI が指定されていません"))?;
+
+        debug!("resources/read リクエストを処理中: {}", uri);
+
+        // ui:// スキームの場合は MCP Apps リソースとして処理
+        if uri.starts_with("ui://") {
+            match mcp_apps::read_ui_resource(uri) {
+                Some(result) => {
+                    info!("UI リソースを返却: {}", uri);
+                    Ok(result)
+                }
+                None => {
+                    Err(anyhow::anyhow!("UI リソースが見つかりません: {}", uri))
+                }
+            }
+        } else {
+            Err(anyhow::anyhow!("リソースが見つかりません: {}", uri))
+        }
     }
 
     /// resources/templates/list リクエストを処理（空のリストを返す）

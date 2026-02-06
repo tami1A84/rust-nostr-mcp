@@ -9,8 +9,10 @@
 mod config;
 mod content;
 mod mcp;
+mod mcp_apps;
 mod nostr_client;
 mod tools;
+mod ui_templates;
 
 use anyhow::Result;
 use tracing::{info, warn};

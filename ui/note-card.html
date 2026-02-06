@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nostr Note</title>
+  <style>{{COMMON_CSS}}</style>
+</head>
+<body>
+  <div id="app" class="loading">
+    <div class="loading-spinner"></div>
+  </div>
+
+  <script>
+    // MCP Apps JSON-RPC communication
+    let rpcId = 0;
+    const pending = new Map();
+
+    function sendRpc(method, params) {
+      const id = ++rpcId;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+      });
+    }
+
+    function sendNotification(method, params) {
+      window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+    }
+
+    window.addEventListener("message", (event) => {
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== "2.0") return;
+
+      // Response to our request
+      if (msg.id && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(msg.error);
+        else resolve(msg.result);
+        return;
+      }
+
+      // Notifications from host
+      if (msg.method === "ui/notifications/tool-result") {
+        handleToolResult(msg.params);
+      } else if (msg.method === "ui/notifications/tool-input") {
+        handleToolInput(msg.params);
+      } else if (msg.method === "ui/notifications/tool-cancelled") {
+        showError("Operation cancelled");
+      } else if (msg.method === "ui/notifications/host-context-changed") {
+        handleContextChanged(msg.params);
+      } else if (msg.method === "ui/resource-teardown") {
+        // Respond to teardown
+        window.parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+      }
+    });
+
+    // Initialize MCP App connection
+    async function init() {
+      try {
+        const result = await sendRpc("ui/initialize", {
+          protocolVersion: "2026-01-26",
+          capabilities: {},
+          clientInfo: { name: "nostr-note-card", version: "0.1.0" },
+          appCapabilities: { availableDisplayModes: ["inline"] }
+        });
+        sendNotification("ui/notifications/initialized", {});
+      } catch (e) {
+        console.error("Init failed:", e);
+      }
+    }
+
+    function handleToolInput(params) {
+      // Input arguments available before result
+    }
+
+    function handleToolResult(params) {
+      if (params.isError) {
+        showError(params.content?.[0]?.text || "Unknown error");
+        return;
+      }
+      try {
+        const text = params.content?.[0]?.text || "{}";
+        const data = JSON.parse(text);
+        if (data.notes) {
+          renderNotes(data.notes);
+        } else if (data.note || data.root) {
+          renderNotes([data.note || data.root]);
+        } else {
+          renderNotes([data]);
+        }
+      } catch (e) {
+        showError("Failed to parse result");
+      }
+    }
+
+    function renderNotes(notes) {
+      const app = document.getElementById("app");
+      app.className = "";
+      app.innerHTML = notes.map(renderSingleNote).join("");
+    }
+
+    function renderSingleNote(note) {
+      const author = note.author || {};
+      const displayName = author.display || author.display_name || author.name || shortKey(author.npub || "");
+      const avatar = author.picture || "";
+      const nip05 = author.nip05 ? `@${author.nip05}` : shortKey(author.npub || "");
+      const time = note.formatted_time || "";
+      const content = escapeHtml(note.content || "");
+      const reactions = note.reactions || 0;
+      const replies = note.replies || 0;
+      const media = note.media || {};
+      const images = media.images || [];
+
+      let mediaHtml = "";
+      if (images.length > 0) {
+        const gridCols = images.length === 1 ? "1fr" : images.length === 2 ? "1fr 1fr" : "1fr 1fr";
+        mediaHtml = `<div class="media-grid" style="grid-template-columns: ${gridCols}">
+          ${images.map(url => `<img src="${escapeAttr(url)}" alt="" loading="lazy">`).join("")}
+        </div>`;
+      }
+
+      const hashtags = note.parsed_content?.hashtags || [];
+      let tagsHtml = "";
+      if (hashtags.length > 0) {
+        tagsHtml = `<div class="tag-list">${hashtags.map(t => `<span class="tag">#${escapeHtml(t)}</span>`).join("")}</div>`;
+      }
+
+      return `<div class="card">
+        <div class="card-body">
+          <div class="author-header">
+            ${avatar ? `<img class="author-avatar" src="${escapeAttr(avatar)}" alt="">` : `<div class="author-avatar"></div>`}
+            <div class="author-info">
+              <span class="author-name">${escapeHtml(displayName)}</span>
+              <span class="author-nip05">${escapeHtml(nip05)}</span>
+            </div>
+          </div>
+          <div class="content-text">${content}</div>
+          ${mediaHtml}
+          ${tagsHtml}
+        </div>
+        <div class="card-footer">
+          ${reactions > 0 ? `<span class="stat">${reactions} reactions</span>` : ""}
+          ${replies > 0 ? `<span class="stat">${replies} replies</span>` : ""}
+          <span class="timestamp">${escapeHtml(time)}</span>
+        </div>
+      </div>`;
+    }
+
+    function showError(msg) {
+      const app = document.getElementById("app");
+      app.className = "";
+      app.innerHTML = `<div class="error">${escapeHtml(msg)}</div>`;
+    }
+
+    function handleContextChanged(params) {
+      // Theme or dimension changes from host
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function escapeAttr(str) {
+      return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function shortKey(npub) {
+      if (!npub || npub.length < 16) return npub || "";
+      return npub.slice(0, 12) + "..." + npub.slice(-4);
+    }
+
+    init();
+  </script>
+</body>
+</html>

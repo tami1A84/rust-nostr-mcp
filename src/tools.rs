@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 use crate::content;
+use crate::mcp_apps;
 use crate::nostr_client::{ArticleParams, DirectMessageInfo, NostrClient, NoteInfo, ThreadReply};
 
 /// 取得件数の上限
@@ -31,6 +32,9 @@ pub struct ToolDefinition {
     /// 入力パラメータの JSON Schema
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
+    /// MCP Apps UI メタデータ（オプション）
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
 }
 
 /// limit パラメータを抽出するヘルパー
@@ -129,7 +133,16 @@ fn format_display_card_footer(reactions: Option<u64>, replies: Option<u64>, form
 }
 
 /// 利用可能なツールのリストを返します。
-pub fn get_tool_definitions() -> Vec<ToolDefinition> {
+/// `ui_enabled` が `true` の場合、MCP Apps UI メタデータを含めます。
+pub fn get_tool_definitions(ui_enabled: bool) -> Vec<ToolDefinition> {
+    let meta = |name: &str| -> Option<Value> {
+        if ui_enabled {
+            mcp_apps::get_tool_ui_meta(name)
+        } else {
+            None
+        }
+    };
+
     vec![
         // 既存ツール
         ToolDefinition {
@@ -145,6 +158,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["content"]
             }),
+            meta: meta("post_nostr_note"),
         },
         ToolDefinition {
             name: "get_nostr_timeline".to_string(),
@@ -158,6 +172,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 }
             }),
+            meta: meta("get_nostr_timeline"),
         },
         ToolDefinition {
             name: "search_nostr_notes".to_string(),
@@ -176,6 +191,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["query"]
             }),
+            meta: meta("search_nostr_notes"),
         },
         ToolDefinition {
             name: "get_nostr_profile".to_string(),
@@ -190,6 +206,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["pubkey"]
             }),
+            meta: meta("get_nostr_profile"),
         },
         // Phase 1: NIP-23 長文コンテンツツール
         ToolDefinition {
@@ -230,6 +247,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["title", "content"]
             }),
+            meta: meta("post_nostr_article"),
         },
         ToolDefinition {
             name: "get_nostr_articles".to_string(),
@@ -252,6 +270,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 }
             }),
+            meta: meta("get_nostr_articles"),
         },
         ToolDefinition {
             name: "save_nostr_draft".to_string(),
@@ -287,6 +306,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["title", "content"]
             }),
+            meta: meta("save_nostr_draft"),
         },
         ToolDefinition {
             name: "get_nostr_drafts".to_string(),
@@ -300,6 +320,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 }
             }),
+            meta: meta("get_nostr_drafts"),
         },
         // Phase 2: タイムライン拡張機能
         ToolDefinition {
@@ -319,6 +340,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["note_id"]
             }),
+            meta: meta("get_nostr_thread"),
         },
         ToolDefinition {
             name: "react_to_note".to_string(),
@@ -337,6 +359,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["note_id"]
             }),
+            meta: meta("react_to_note"),
         },
         ToolDefinition {
             name: "reply_to_note".to_string(),
@@ -355,6 +378,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["note_id", "content"]
             }),
+            meta: meta("reply_to_note"),
         },
         ToolDefinition {
             name: "get_nostr_notifications".to_string(),
@@ -372,6 +396,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 }
             }),
+            meta: meta("get_nostr_notifications"),
         },
         // Phase 4: 高度な機能
         ToolDefinition {
@@ -395,6 +420,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["target", "amount"]
             }),
+            meta: meta("send_zap"),
         },
         ToolDefinition {
             name: "get_zap_receipts".to_string(),
@@ -413,6 +439,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["note_id"]
             }),
+            meta: meta("get_zap_receipts"),
         },
         ToolDefinition {
             name: "send_dm".to_string(),
@@ -431,6 +458,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["recipient", "content"]
             }),
+            meta: meta("send_dm"),
         },
         ToolDefinition {
             name: "get_dms".to_string(),
@@ -448,6 +476,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 }
             }),
+            meta: meta("get_dms"),
         },
         ToolDefinition {
             name: "get_relay_list".to_string(),
@@ -462,6 +491,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["pubkey"]
             }),
+            meta: meta("get_relay_list"),
         },
     ]
 }
