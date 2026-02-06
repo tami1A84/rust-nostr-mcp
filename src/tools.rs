@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 use crate::content;
-use crate::nostr_client::{ArticleParams, NostrClient, NoteInfo, ThreadReply};
+use crate::nostr_client::{ArticleParams, DirectMessageInfo, NostrClient, NoteInfo, ThreadReply};
 
 /// 取得件数の上限
 const MAX_LIMIT: u64 = 100;
@@ -373,6 +373,96 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 }
             }),
         },
+        // Phase 4: 高度な機能
+        ToolDefinition {
+            name: "send_zap".to_string(),
+            description: "ノートまたはプロフィールに Lightning Zap (NIP-57) を送信します。NWC (Nostr Wallet Connect) の設定が必要です。書き込みアクセスが必要です。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Zap 対象のイベント ID（hex、nevent、note 形式）または公開鍵（npub または hex 形式）"
+                    },
+                    "amount": {
+                        "type": "number",
+                        "description": "sats 単位の金額"
+                    },
+                    "comment": {
+                        "type": "string",
+                        "description": "Zap コメント（任意）"
+                    }
+                },
+                "required": ["target", "amount"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_zap_receipts".to_string(),
+            description: "ノートの Zap レシート (Kind 9735, NIP-57) を取得します。送信者・金額・コメント情報付きで返します。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "note_id": {
+                        "type": "string",
+                        "description": "対象ノートのイベント ID（hex、nevent、note 形式対応）"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "取得するレシートの最大数（デフォルト: 20、最大: 100）"
+                    }
+                },
+                "required": ["note_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "send_dm".to_string(),
+            description: "暗号化されたダイレクトメッセージ (NIP-04) を送信します。書き込みアクセスが必要です。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": "受信者の公開鍵（npub または hex 形式）"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "メッセージ内容"
+                    }
+                },
+                "required": ["recipient", "content"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_dms".to_string(),
+            description: "暗号化されたダイレクトメッセージ (NIP-04) の会話を取得・復号します。認証が必要です。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "with": {
+                        "type": "string",
+                        "description": "会話相手の公開鍵（npub または hex 形式）でフィルタ（任意）"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "取得する最大メッセージ数（デフォルト: 20、最大: 100）"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "get_relay_list".to_string(),
+            description: "ユーザーのリレーリスト (Kind 10002, NIP-65) を取得します。各リレーの読み書き設定を返します。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pubkey": {
+                        "type": "string",
+                        "description": "npub (bech32) または hex 形式の公開鍵"
+                    }
+                },
+                "required": ["pubkey"]
+            }),
+        },
     ]
 }
 
@@ -407,6 +497,12 @@ impl ToolExecutor {
             "react_to_note" => self.react_to_note(arguments).await,
             "reply_to_note" => self.reply_to_note(arguments).await,
             "get_nostr_notifications" => self.get_notifications(arguments).await,
+            // Phase 4: 高度な機能
+            "send_zap" => self.send_zap(arguments).await,
+            "get_zap_receipts" => self.get_zap_receipts(arguments).await,
+            "send_dm" => self.send_dm(arguments).await,
+            "get_dms" => self.get_dms(arguments).await,
+            "get_relay_list" => self.get_relay_list(arguments).await,
             _ => Err(anyhow!("不明なツール: {}", name)),
         }
     }
@@ -813,6 +909,187 @@ impl ToolExecutor {
             "drafts": formatted
         }))
     }
+
+    // ========================================
+    // Phase 4: 高度な機能ツール
+    // ========================================
+
+    /// Zap を送信
+    async fn send_zap(&self, arguments: Value) -> Result<Value> {
+        let target = arguments
+            .get("target")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("必須パラメータが不足: target"))?;
+
+        let amount = arguments
+            .get("amount")
+            .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
+            .ok_or_else(|| anyhow!("必須パラメータが不足: amount"))?;
+
+        if target.is_empty() {
+            return Err(anyhow!("target は空にできません"));
+        }
+
+        if amount == 0 {
+            return Err(anyhow!("amount は 0 より大きくなければなりません"));
+        }
+
+        let comment = arguments
+            .get("comment")
+            .and_then(|v| v.as_str());
+
+        debug!("Zap 送信: target='{}', amount={}, comment={:?}", target, amount, comment);
+
+        self.client.send_zap(target, amount, comment).await
+    }
+
+    /// Zap レシートを取得
+    async fn get_zap_receipts(&self, arguments: Value) -> Result<Value> {
+        let note_id = arguments
+            .get("note_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("必須パラメータが不足: note_id"))?;
+
+        if note_id.is_empty() {
+            return Err(anyhow!("note_id は空にできません"));
+        }
+
+        let limit = extract_limit(&arguments);
+        debug!("Zap レシート取得: note_id='{}', limit={}", note_id, limit);
+
+        let receipts = self.client.get_zap_receipts(note_id, limit).await?;
+
+        let total_sats: u64 = receipts.iter().map(|r| r.amount_sats).sum();
+
+        let formatted: Vec<Value> = receipts.iter().map(|receipt| {
+            let mut result = json!({
+                "id": receipt.id,
+                "nevent": receipt.nevent,
+                "amount_sats": receipt.amount_sats,
+                "created_at": receipt.created_at,
+                "formatted_time": format_timestamp(receipt.created_at)
+            });
+
+            if let Some(ref sender) = receipt.sender {
+                result["sender"] = json!({
+                    "pubkey": sender.pubkey,
+                    "npub": sender.npub,
+                    "name": sender.name,
+                    "display_name": sender.display_name,
+                    "display": sender.display(),
+                    "picture": sender.picture,
+                    "nip05": sender.nip05
+                });
+            }
+
+            if let Some(ref comment) = receipt.comment {
+                result["comment"] = json!(comment);
+            }
+
+            if let Some(ref target_note_id) = receipt.target_note_id {
+                result["target_note_id"] = json!(target_note_id);
+            }
+
+            if let Some(ref target_pubkey) = receipt.target_pubkey {
+                result["target_pubkey"] = json!(target_pubkey);
+            }
+
+            result
+        }).collect();
+
+        Ok(json!({
+            "success": true,
+            "count": receipts.len(),
+            "total_sats": total_sats,
+            "zap_receipts": formatted
+        }))
+    }
+
+    /// ダイレクトメッセージを送信
+    async fn send_dm(&self, arguments: Value) -> Result<Value> {
+        let recipient = arguments
+            .get("recipient")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("必須パラメータが不足: recipient"))?;
+
+        let content = arguments
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("必須パラメータが不足: content"))?;
+
+        if recipient.is_empty() {
+            return Err(anyhow!("recipient は空にできません"));
+        }
+        if content.is_empty() {
+            return Err(anyhow!("content は空にできません"));
+        }
+
+        debug!("DM 送信: recipient='{}'", recipient);
+
+        let event_id = self.client.send_dm(recipient, content).await?;
+
+        Ok(json!({
+            "success": true,
+            "event_id": event_id.to_hex(),
+            "nevent": event_id.to_bech32().unwrap_or_default(),
+            "message": "ダイレクトメッセージを送信しました。"
+        }))
+    }
+
+    /// ダイレクトメッセージを取得
+    async fn get_dms(&self, arguments: Value) -> Result<Value> {
+        let with = arguments
+            .get("with")
+            .and_then(|v| v.as_str());
+
+        let limit = extract_limit(&arguments);
+        debug!("DM 取得: with={:?}, limit={}", with, limit);
+
+        let messages = self.client.get_dms(with, limit).await?;
+
+        let formatted: Vec<Value> = messages.iter().map(|dm| {
+            format_dm_json(dm)
+        }).collect();
+
+        Ok(json!({
+            "success": true,
+            "count": messages.len(),
+            "messages": formatted
+        }))
+    }
+
+    /// リレーリストを取得
+    async fn get_relay_list(&self, arguments: Value) -> Result<Value> {
+        let pubkey = arguments
+            .get("pubkey")
+            .or_else(|| arguments.get("npub"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("必須パラメータが不足: pubkey"))?;
+
+        if pubkey.is_empty() {
+            return Err(anyhow!("pubkey は空にできません"));
+        }
+
+        debug!("リレーリスト取得: {}", pubkey);
+
+        let relay_list = self.client.get_relay_list(pubkey).await?;
+
+        let formatted_relays: Vec<Value> = relay_list.relays.iter().map(|entry| {
+            json!({
+                "url": entry.url,
+                "read": entry.read,
+                "write": entry.write
+            })
+        }).collect();
+
+        Ok(json!({
+            "success": true,
+            "pubkey": relay_list.pubkey,
+            "npub": relay_list.npub,
+            "count": relay_list.relays.len(),
+            "relays": formatted_relays
+        }))
+    }
 }
 
 /// 記事を JSON 表示形式にフォーマットするヘルパー（Phase 3: コンテンツ解析対応）
@@ -866,6 +1143,30 @@ fn format_thread_reply(reply: &ThreadReply) -> Value {
     json!({
         "note": format_note_json(&reply.note),
         "replies": children
+    })
+}
+
+/// DM を JSON 表示形式にフォーマットするヘルパー
+fn format_dm_json(dm: &DirectMessageInfo) -> Value {
+    let formatted_time = format_timestamp(dm.created_at);
+
+    json!({
+        "id": dm.id,
+        "nevent": dm.nevent,
+        "direction": dm.direction,
+        "author": {
+            "pubkey": dm.author.pubkey,
+            "npub": dm.author.npub,
+            "name": dm.author.name,
+            "display_name": dm.author.display_name,
+            "display": dm.author.display(),
+            "picture": dm.author.picture,
+            "nip05": dm.author.nip05
+        },
+        "peer_pubkey": dm.peer_pubkey,
+        "content": dm.content,
+        "created_at": dm.created_at,
+        "formatted_time": formatted_time
     })
 }
 

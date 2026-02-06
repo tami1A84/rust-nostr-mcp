@@ -4,7 +4,7 @@
 
 これは Model Context Protocol (MCP) サーバーで、AI エージェントが Nostr ネットワークと対話できるようにします。秘密鍵をローカルに保存し、AI エージェントには渡さないセキュリティベストプラクティスに従っています。
 
-## 現在の機能 (v0.4.0)
+## 現在の機能 (v0.5.0)
 
 ### セキュリティ
 - **安全な鍵管理**: 秘密鍵を `~/.config/rust-nostr-mcp/config.json` に保存
@@ -52,6 +52,13 @@
 - avatar, name, nip05, bio を構造化表示
 - 統計情報（stats）: following, followers, notes 数を取得・表示
 
+### ツール（Phase 4: 高度な機能）
+- `send_zap` - Lightning Zap を送信（NIP-57, NWC 設定が必要）
+- `get_zap_receipts` - ノートの Zap レシートを取得（NIP-57）
+- `send_dm` - 暗号化ダイレクトメッセージを送信（NIP-04）
+- `get_dms` - DM 会話を取得・復号（NIP-04）
+- `get_relay_list` - ユーザーのリレーリストを取得（NIP-65）
+
 ### モダンな表示形式
 - 著者情報を含む（name、display_name、picture、nip05）
 - 相対タイムスタンプ（例: 「5分前」「2時間前」）
@@ -61,53 +68,36 @@
 
 ---
 
-### Phase 4: 高度な機能
+### Phase 4: 高度な機能（実装済み）
 
 #### NIP サポートロードマップ
 
-| NIP | 説明 | 優先度 |
-|-----|------|--------|
+| NIP | 説明 | 状態 |
+|-----|------|------|
 | NIP-01 | 基本プロトコル | 実装済み |
 | NIP-02 | コンタクトリスト | 実装済み |
+| NIP-04 | 暗号化 DM | 実装済み |
 | NIP-05 | DNS 検証 | 実装済み |
 | NIP-10 | リプライスレッディング | 実装済み |
 | NIP-19 | bech32 エンコーディング | 実装済み |
 | NIP-23 | 長文コンテンツ | 実装済み |
 | NIP-25 | リアクション | 実装済み |
 | NIP-27 | nostr: 参照 | 実装済み |
+| NIP-47 | Nostr Wallet Connect | 実装済み |
 | NIP-50 | 検索 | 実装済み |
-| NIP-57 | Zaps | Phase 4 |
-| NIP-65 | リレーリスト | Phase 4 |
+| NIP-57 | Zaps | 実装済み |
+| NIP-65 | リレーリスト | 実装済み |
 
 #### Zap サポート (NIP-57)
-```
-send_zap
-- ノートまたはプロフィールに Lightning Zap を送信
-- パラメータ:
-  - target (string, 必須): イベント ID または pubkey
-  - amount (number, 必須): sats 単位の金額
-  - comment (string, 任意): Zap コメント
+- `send_zap` - ノートまたはプロフィールに Lightning Zap を送信（NWC 設定が必要）
+- `get_zap_receipts` - ノートの Zap レシートを取得（送信者・金額・コメント付き）
 
-get_zap_receipts
-- ノートの Zap レシートを取得
-- パラメータ:
-  - note_id (string, 必須): イベント ID
-```
+#### ダイレクトメッセージ (NIP-04)
+- `send_dm` - 暗号化されたダイレクトメッセージを送信
+- `get_dms` - ダイレクトメッセージの会話を取得・復号
 
-#### ダイレクトメッセージ (NIP-04/NIP-17)
-```
-send_dm
-- 暗号化されたダイレクトメッセージを送信
-- パラメータ:
-  - recipient (string, 必須): 受信者の pubkey
-  - content (string, 必須): メッセージ内容
-
-get_dms
-- ダイレクトメッセージの会話を取得
-- パラメータ:
-  - with (string, 任意): 会話相手でフィルタ
-  - limit (number, 任意): 最大メッセージ数
-```
+#### リレーリスト (NIP-65)
+- `get_relay_list` - ユーザーのリレーリスト (Kind 10002) を取得
 
 ---
 
@@ -332,6 +322,15 @@ AI Agent:
 - `read`: このリレーからイベントを取得
 - `write`: このリレーにイベントを公開
 - `search`: NIP-50 検索クエリに使用
+
+### NWC (Nostr Wallet Connect) 設定
+Zap 送信を有効にするには、`nwc-uri` フィールドに NWC URI を設定してください:
+```json
+{
+  "nwc-uri": "nostr+walletconnect://..."
+}
+```
+NWC URI は Lightning ウォレット（Alby、Mutiny Wallet 等）から取得できます。
 
 ---
 

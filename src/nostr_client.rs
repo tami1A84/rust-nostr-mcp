@@ -20,6 +20,8 @@ pub struct NostrClientConfig {
     pub relays: Vec<String>,
     /// NIP-50 検索対応リレー URL のリスト
     pub search_relays: Vec<String>,
+    /// Nostr Wallet Connect URI（NIP-47、Zap 送信用）
+    pub nwc_uri: Option<String>,
 }
 
 /// 著者情報（表示用）
@@ -89,6 +91,9 @@ pub struct NostrClient {
     connected: Arc<RwLock<bool>>,
     /// プロフィールキャッシュ（繰り返しのルックアップを回避）
     profile_cache: Arc<RwLock<HashMap<PublicKey, AuthorInfo>>>,
+    /// NWC URI（Zap 送信用、Phase 4）
+    #[allow(dead_code)]
+    nwc_uri: Option<String>,
 }
 
 impl NostrClient {
@@ -113,6 +118,20 @@ impl NostrClient {
             }
         }
 
+        // Phase 4: NWC Zapper の設定
+        if let Some(ref nwc_uri_str) = config.nwc_uri {
+            match NostrWalletConnectURI::parse(nwc_uri_str) {
+                Ok(uri) => {
+                    let nwc_zapper = nwc::NWC::new(uri);
+                    client.set_zapper(nwc_zapper).await;
+                    info!("NWC Zapper を設定しました");
+                }
+                Err(e) => {
+                    warn!("NWC URI のパースに失敗: {}。Zap 送信は利用できません。", e);
+                }
+            }
+        }
+
         client.connect().await;
         tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -123,6 +142,7 @@ impl NostrClient {
             search_relays: config.search_relays,
             connected: Arc::new(RwLock::new(true)),
             profile_cache: Arc::new(RwLock::new(HashMap::new())),
+            nwc_uri: config.nwc_uri,
         })
     }
 
@@ -1145,6 +1165,365 @@ impl NostrClient {
         Ok(notifications)
     }
 
+    // ========================================
+    // Phase 4: Zap サポート (NIP-57)
+    // ========================================
+
+    /// ノートの Zap レシート (Kind 9735) を取得します。
+    pub async fn get_zap_receipts(&self, note_id: &str, limit: u64) -> Result<Vec<ZapReceiptInfo>> {
+        let event_id = Self::parse_event_id(note_id)?;
+
+        // Kind 9735 (Zap Receipt) を取得
+        let filter = Filter::new()
+            .kind(Kind::ZapReceipt)
+            .event(event_id)
+            .limit(limit as usize);
+
+        let events = self.client
+            .fetch_events(vec![filter], Duration::from_secs(10))
+            .await
+            .context("Zap レシートの取得に失敗しました")?;
+
+        let events_vec: Vec<Event> = events.into_iter().collect();
+        let mut receipts = Vec::new();
+
+        for event in &events_vec {
+            let receipt = self.parse_zap_receipt(event).await;
+            receipts.push(receipt);
+        }
+
+        receipts.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        receipts.truncate(limit as usize);
+
+        Ok(receipts)
+    }
+
+    /// Zap レシートイベントをパースするヘルパー
+    async fn parse_zap_receipt(&self, event: &Event) -> ZapReceiptInfo {
+        // bolt11 タグから金額を抽出
+        let bolt11 = extract_tag_value(event, "bolt11").unwrap_or_default();
+        let amount_sats = Self::extract_bolt11_amount(&bolt11);
+
+        // description タグから Zap リクエストを取得（送信者・コメント情報）
+        let description = extract_tag_value(event, "description");
+        let (sender_pubkey, comment) = if let Some(ref desc) = description {
+            Self::parse_zap_request_description(desc)
+        } else {
+            (None, None)
+        };
+
+        // 送信者のプロフィールを取得
+        let sender = if let Some(pk_hex) = &sender_pubkey {
+            if let Ok(pk) = PublicKey::from_hex(pk_hex) {
+                let profiles = self.fetch_profiles(&[pk]).await;
+                profiles.get(&pk).cloned()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // 対象ノート ID とpubkey を取得
+        let target_note_id = event.tags.iter().find_map(|tag| {
+            let values = tag.as_slice();
+            if values.len() >= 2 && values[0] == "e" {
+                Some(values[1].to_string())
+            } else {
+                None
+            }
+        });
+
+        let target_pubkey = event.tags.iter().find_map(|tag| {
+            let values = tag.as_slice();
+            if values.len() >= 2 && values[0] == "p" {
+                Some(values[1].to_string())
+            } else {
+                None
+            }
+        });
+
+        ZapReceiptInfo {
+            id: event.id.to_hex(),
+            nevent: event.id.to_bech32().unwrap_or_default(),
+            sender,
+            amount_sats,
+            comment,
+            target_note_id,
+            target_pubkey,
+            created_at: event.created_at.as_u64(),
+        }
+    }
+
+    /// bolt11 インボイスから金額（sats）を抽出
+    fn extract_bolt11_amount(bolt11: &str) -> u64 {
+        // bolt11 形式: lnbc{amount}{multiplier}...
+        // multiplier: m = milli (0.001), u = micro (0.000001), n = nano, p = pico
+        let bolt11_lower = bolt11.to_lowercase();
+        if let Some(start) = bolt11_lower.strip_prefix("lnbc") {
+            // 数字部分を取得
+            let num_str: String = start.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(num) = num_str.parse::<u64>() {
+                let after_num = &start[num_str.len()..];
+                if after_num.starts_with('m') {
+                    return num * 100_000; // milli-BTC → sats
+                } else if after_num.starts_with('u') {
+                    return num * 100; // micro-BTC → sats
+                } else if after_num.starts_with('n') {
+                    return num / 10; // nano-BTC → sats
+                } else if after_num.starts_with('p') {
+                    return num / 10_000; // pico-BTC → sats
+                } else {
+                    return num * 100_000_000; // BTC → sats
+                }
+            }
+        }
+        0
+    }
+
+    /// Zap リクエストの description JSON から送信者 pubkey とコメントを抽出
+    fn parse_zap_request_description(description: &str) -> (Option<String>, Option<String>) {
+        if let Ok(event) = serde_json::from_str::<serde_json::Value>(description) {
+            let pubkey = event.get("pubkey")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let comment = event.get("content")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            (pubkey, comment)
+        } else {
+            (None, None)
+        }
+    }
+
+    /// ノートまたはプロフィールに Zap を送信します（NWC 設定が必要）。
+    pub async fn send_zap(&self, target: &str, amount_sats: u64, comment: Option<&str>) -> Result<serde_json::Value> {
+        self.require_write_access()?;
+
+        if !self.client.has_zapper().await {
+            return Err(anyhow!(
+                "Zap 送信には NWC (Nostr Wallet Connect) の設定が必要です。\
+                設定ファイルに \"nwc-uri\" を追加してください。"
+            ));
+        }
+
+        // target がイベント ID かpubkey かを判定
+        let zap_entity: ZapEntity = if target.starts_with("npub") || (!target.starts_with("note") && !target.starts_with("nevent") && target.len() == 64 && target.chars().all(|c| c.is_ascii_hexdigit())) {
+            // pubkey として解釈を試みる（ただし64文字hex以外も考慮）
+            if let Ok(pk) = Self::parse_public_key(target) {
+                ZapEntity::from(pk)
+            } else if let Ok(eid) = Self::parse_event_id(target) {
+                ZapEntity::from(eid)
+            } else {
+                return Err(anyhow!("無効な target です。イベント ID または公開鍵を指定してください。"));
+            }
+        } else {
+            // イベント ID として解釈
+            if let Ok(eid) = Self::parse_event_id(target) {
+                ZapEntity::from(eid)
+            } else if let Ok(pk) = Self::parse_public_key(target) {
+                ZapEntity::from(pk)
+            } else {
+                return Err(anyhow!("無効な target です。イベント ID または公開鍵を指定してください。"));
+            }
+        };
+
+        let details = if let Some(msg) = comment {
+            Some(ZapDetails::new(ZapType::Public).message(msg))
+        } else {
+            Some(ZapDetails::new(ZapType::Public))
+        };
+
+        self.client.zap(zap_entity, amount_sats, details).await
+            .context("Zap の送信に失敗しました")?;
+
+        info!("Zap を送信しました: {} sats → {}", amount_sats, target);
+
+        Ok(serde_json::json!({
+            "success": true,
+            "amount_sats": amount_sats,
+            "target": target,
+            "message": format!("{} sats の Zap を送信しました。", amount_sats)
+        }))
+    }
+
+    // ========================================
+    // Phase 4: ダイレクトメッセージ (NIP-04)
+    // ========================================
+
+    /// 暗号化されたダイレクトメッセージを送信します（NIP-04）。
+    pub async fn send_dm(&self, recipient: &str, content: &str) -> Result<EventId> {
+        self.require_write_access()?;
+
+        let recipient_pk = Self::parse_public_key(recipient)?;
+
+        // NIP-04: signer を使って暗号化
+        let signer = self.client.signer().await
+            .map_err(|e| anyhow!("署名者の取得に失敗: {}", e))?;
+        let encrypted = signer.nip04_encrypt(&recipient_pk, content).await
+            .map_err(|e| anyhow!("メッセージの暗号化に失敗: {}", e))?;
+
+        // Kind 4 (Encrypted Direct Message) イベントを作成
+        let builder = EventBuilder::new(Kind::EncryptedDirectMessage, encrypted)
+            .tags(vec![Tag::public_key(recipient_pk)]);
+
+        let output = self.client.send_event_builder(builder).await
+            .context("ダイレクトメッセージの送信に失敗しました")?;
+
+        let event_id = *output.id();
+        info!("DM を送信しました。イベント ID: {}", event_id);
+        Ok(event_id)
+    }
+
+    /// ダイレクトメッセージの会話を取得します（NIP-04）。
+    pub async fn get_dms(&self, with: Option<&str>, limit: u64) -> Result<Vec<DirectMessageInfo>> {
+        let pk = self.public_key
+            .ok_or_else(|| anyhow!("DM の取得には認証が必要です。設定ファイルに nsec を設定してください。"))?;
+
+        let signer = self.client.signer().await
+            .map_err(|e| anyhow!("署名者の取得に失敗: {}", e))?;
+
+        // 相手の公開鍵（指定されている場合）
+        let peer_pk = if let Some(with_str) = with {
+            Some(Self::parse_public_key(with_str)?)
+        } else {
+            None
+        };
+
+        // 受信 DM: 自分宛の Kind 4 イベント
+        let mut received_filter = Filter::new()
+            .kind(Kind::EncryptedDirectMessage)
+            .pubkey(pk)
+            .limit(limit as usize);
+
+        if let Some(ref peer) = peer_pk {
+            received_filter = received_filter.author(*peer);
+        }
+
+        // 送信 DM: 自分が送った Kind 4 イベント
+        let mut sent_filter = Filter::new()
+            .kind(Kind::EncryptedDirectMessage)
+            .author(pk)
+            .limit(limit as usize);
+
+        if let Some(ref peer) = peer_pk {
+            sent_filter = sent_filter.pubkey(*peer);
+        }
+
+        let events = self.client
+            .fetch_events(vec![received_filter, sent_filter], Duration::from_secs(15))
+            .await
+            .context("DM の取得に失敗しました")?;
+
+        let events_vec: Vec<Event> = events.into_iter()
+            .collect();
+
+        let pubkeys = Self::collect_pubkeys(&events_vec);
+        let profiles = self.fetch_profiles(&pubkeys).await;
+
+        let mut messages = Vec::new();
+
+        for event in &events_vec {
+            let is_sent = event.pubkey == pk;
+            let peer_pubkey = if is_sent {
+                // 送信メッセージ: p タグから相手の pubkey を取得
+                event.tags.iter().find_map(|tag| {
+                    let values = tag.as_slice();
+                    if values.len() >= 2 && values[0] == "p" {
+                        PublicKey::from_hex(&values[1]).ok()
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                Some(event.pubkey)
+            };
+
+            let Some(peer) = peer_pubkey else { continue };
+
+            // NIP-04 復号
+            let decrypted = if is_sent {
+                signer.nip04_decrypt(&peer, &event.content).await
+            } else {
+                signer.nip04_decrypt(&event.pubkey, &event.content).await
+            };
+
+            let content = match decrypted {
+                Ok(text) => text,
+                Err(e) => {
+                    debug!("DM 復号に失敗（スキップ）: {}", e);
+                    continue;
+                }
+            };
+
+            let author = profiles
+                .get(&event.pubkey)
+                .cloned()
+                .unwrap_or_else(|| AuthorInfo::from_public_key(&event.pubkey));
+
+            messages.push(DirectMessageInfo {
+                id: event.id.to_hex(),
+                nevent: event.id.to_bech32().unwrap_or_default(),
+                author,
+                content,
+                direction: if is_sent { "sent".to_string() } else { "received".to_string() },
+                peer_pubkey: peer.to_hex(),
+                created_at: event.created_at.as_u64(),
+            });
+        }
+
+        messages.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        messages.truncate(limit as usize);
+
+        Ok(messages)
+    }
+
+    // ========================================
+    // Phase 4: リレーリスト (NIP-65)
+    // ========================================
+
+    /// ユーザーのリレーリスト (Kind 10002, NIP-65) を取得します。
+    pub async fn get_relay_list(&self, pubkey_str: &str) -> Result<RelayListInfo> {
+        let public_key = Self::parse_public_key(pubkey_str)?;
+
+        let filter = Filter::new()
+            .author(public_key)
+            .kind(Kind::RelayList)
+            .limit(1);
+
+        let events = self.client
+            .fetch_events(vec![filter], Duration::from_secs(10))
+            .await
+            .context("リレーリストの取得に失敗しました")?;
+
+        let event = events
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("{} のリレーリストが見つかりません", pubkey_str))?;
+
+        let relays: Vec<RelayListEntry> = nip65::extract_relay_list(&event)
+            .map(|(url, metadata)| {
+                let (read, write) = match metadata {
+                    Some(RelayMetadata::Read) => (true, false),
+                    Some(RelayMetadata::Write) => (false, true),
+                    None => (true, true), // メタデータなし = 両方
+                };
+                RelayListEntry {
+                    url: url.to_string(),
+                    read,
+                    write,
+                }
+            })
+            .collect();
+
+        Ok(RelayListInfo {
+            pubkey: public_key.to_hex(),
+            npub: public_key.to_bech32().unwrap_or_default(),
+            relays,
+        })
+    }
+
     /// イベント ID 文字列をパース（nevent、note、hex 対応）
     fn parse_event_id(id_str: &str) -> Result<EventId> {
         let id_str = id_str.trim();
@@ -1268,6 +1647,76 @@ pub struct NotificationInfo {
     pub target_note_id: Option<String>,
     /// 作成日時の Unix タイムスタンプ
     pub created_at: u64,
+}
+
+// ========================================
+// Phase 4: データ構造体
+// ========================================
+
+/// Zap レシート情報（NIP-57）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ZapReceiptInfo {
+    /// hex 形式のイベント ID
+    pub id: String,
+    /// nevent 形式のイベント ID
+    pub nevent: String,
+    /// Zap 送信者の情報（Zap リクエストから取得）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<AuthorInfo>,
+    /// Zap 金額（sats）
+    pub amount_sats: u64,
+    /// Zap コメント
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// Zap 対象のノート ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_note_id: Option<String>,
+    /// Zap 対象の pubkey
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_pubkey: Option<String>,
+    /// 作成日時の Unix タイムスタンプ
+    pub created_at: u64,
+}
+
+/// ダイレクトメッセージ情報（NIP-04）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DirectMessageInfo {
+    /// hex 形式のイベント ID
+    pub id: String,
+    /// nevent 形式のイベント ID
+    pub nevent: String,
+    /// 送信者の情報
+    pub author: AuthorInfo,
+    /// 復号済みメッセージ内容
+    pub content: String,
+    /// メッセージの方向（"sent" または "received"）
+    pub direction: String,
+    /// 会話相手の pubkey (hex)
+    pub peer_pubkey: String,
+    /// 作成日時の Unix タイムスタンプ
+    pub created_at: u64,
+}
+
+/// リレーリスト情報（NIP-65）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RelayListInfo {
+    /// hex 形式の公開鍵
+    pub pubkey: String,
+    /// npub 形式の公開鍵
+    pub npub: String,
+    /// リレー一覧
+    pub relays: Vec<RelayListEntry>,
+}
+
+/// リレーリストのエントリ
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RelayListEntry {
+    /// リレー URL
+    pub url: String,
+    /// 読み取り可能
+    pub read: bool,
+    /// 書き込み可能
+    pub write: bool,
 }
 
 /// 記事投稿のパラメータ
