@@ -85,7 +85,7 @@ impl AuthorInfo {
 pub struct NostrClient {
     /// nostr-sdk クライアント
     client: Client,
-    /// 書き込みアクセスの有無（秘密鍵が設定されているか）
+    /// 書き込みアクセスの有無（秘密鍵が設定されているか、または NIP-46 接続済み）
     has_write_access: bool,
     /// 認証済みユーザーの公開鍵
     public_key: Option<PublicKey>,
@@ -98,6 +98,8 @@ pub struct NostrClient {
     /// NWC URI（Zap 送信用、Phase 4）
     #[allow(dead_code)]
     nwc_uri: Option<String>,
+    /// NIP-46 サイナーが有効か（Phase 6: 認証モード切り替え）
+    nip46_active: Arc<RwLock<bool>>,
 }
 
 impl NostrClient {
@@ -147,6 +149,7 @@ impl NostrClient {
             connected: Arc::new(RwLock::new(true)),
             profile_cache: Arc::new(RwLock::new(HashMap::new())),
             nwc_uri: config.nwc_uri,
+            nip46_active: Arc::new(RwLock::new(false)),
         })
     }
 
@@ -181,10 +184,49 @@ impl NostrClient {
     fn require_write_access(&self) -> Result<()> {
         if !self.has_write_access {
             return Err(anyhow!(
-                "読み取り専用モードではこの操作はできません。設定ファイルに nsec を設定してください。"
+                "読み取り専用モードではこの操作はできません。設定ファイルに nsec を設定するか、NIP-46 で接続してください。"
             ));
         }
         Ok(())
+    }
+
+    /// NIP-46 リモートサイナーを有効化し、書き込みアクセスを切り替える（Phase 6 Step 6-3）
+    pub async fn enable_nip46_signer(
+        &mut self,
+        signer: nostr_connect::prelude::NostrConnect,
+        user_pubkey: PublicKey,
+    ) -> Result<()> {
+        info!(
+            "NIP-46 サイナーに切り替え: {}",
+            user_pubkey.to_bech32().unwrap_or_default()
+        );
+
+        self.client.set_signer(signer).await;
+        self.has_write_access = true;
+        self.public_key = Some(user_pubkey);
+        *self.nip46_active.write().await = true;
+
+        info!("NIP-46 リモートサイナーが有効化されました");
+        Ok(())
+    }
+
+    /// NIP-46 リモートサイナーを無効化し、元の状態に戻す
+    pub async fn disable_nip46_signer(&mut self) {
+        info!("NIP-46 サイナーを無効化");
+        // ローカル秘密鍵がない場合は書き込みアクセスも無効に
+        let nip46_was_active = *self.nip46_active.read().await;
+        if nip46_was_active {
+            *self.nip46_active.write().await = false;
+            // ローカル鍵がなければ書き込みを無効化
+            // (client の signer はそのまま残るが、has_write_access で制御)
+            self.has_write_access = false;
+            self.public_key = None;
+        }
+    }
+
+    /// NIP-46 サイナーが有効かどうか
+    pub async fn is_nip46_active(&self) -> bool {
+        *self.nip46_active.read().await
     }
 
     /// 公開鍵のリストに対してプロフィールを取得（キャッシュ付き）
@@ -579,64 +621,55 @@ impl NostrClient {
 
     /// 長文記事 (Kind 30023) を投稿します。
     pub async fn post_article(&self, params: ArticleParams) -> Result<ArticleInfo> {
+        self.publish_article_event(params, Kind::LongFormTextNote, false).await
+    }
+
+    /// 長文記事 (Kind 30023) を取得します。
+    pub async fn get_articles(&self, author: Option<&str>, tags: Option<&[String]>, limit: u64) -> Result<Vec<ArticleInfo>> {
+        self.fetch_articles_by_kind(Kind::LongFormTextNote, author, tags, limit).await
+    }
+
+    /// 記事を下書き (Kind 30024) として保存します。
+    pub async fn save_draft(&self, params: ArticleParams) -> Result<ArticleInfo> {
+        self.publish_article_event(params, Kind::from(30024), true).await
+    }
+
+    /// ユーザーの下書き記事 (Kind 30024) を取得します。
+    pub async fn get_drafts(&self, limit: u64) -> Result<Vec<ArticleInfo>> {
+        self.fetch_articles_by_kind(Kind::from(30024), None, None, limit).await
+    }
+
+    /// 記事/下書きを公開する共通ヘルパー
+    async fn publish_article_event(&self, params: ArticleParams, kind: Kind, is_draft: bool) -> Result<ArticleInfo> {
         self.require_write_access()?;
 
         let d_tag = params.identifier.unwrap_or_else(|| {
-            // d タグが未指定の場合、タイトルからスラッグを生成
             slug_from_title(&params.title)
         });
 
-        let mut tags = vec![
-            Tag::identifier(d_tag.clone()),
-            Tag::custom(TagKind::Title, vec![params.title.clone()]),
-        ];
+        let mut tags = build_article_tags(&params.title, &params.summary, &params.image, &params.tags, &d_tag);
 
-        if let Some(ref summary) = params.summary {
-            tags.push(Tag::custom(TagKind::custom("summary".to_string()), vec![summary.clone()]));
-        }
-
-        if let Some(ref image) = params.image {
-            tags.push(Tag::custom(TagKind::custom("image".to_string()), vec![image.clone()]));
-        }
-
-        if let Some(ref hashtags) = params.tags {
-            for t in hashtags {
-                tags.push(Tag::hashtag(t.clone()));
-            }
-        }
-
-        if let Some(published_at) = params.published_at {
+        // 公開記事の場合のみ published_at を追加
+        if !is_draft {
+            let ts = params.published_at.unwrap_or_else(current_unix_timestamp);
             tags.push(Tag::custom(
                 TagKind::custom("published_at".to_string()),
-                vec![published_at.to_string()],
-            ));
-        } else {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            tags.push(Tag::custom(
-                TagKind::custom("published_at".to_string()),
-                vec![now.to_string()],
+                vec![ts.to_string()],
             ));
         }
 
-        let builder = EventBuilder::new(Kind::LongFormTextNote, &params.content)
-            .tags(tags);
+        let builder = EventBuilder::new(kind, &params.content).tags(tags);
 
+        let label = if is_draft { "下書き" } else { "記事" };
         let output = self.client.send_event_builder(builder).await
-            .context("記事の公開に失敗しました")?;
+            .context(format!("{}の公開に失敗しました", label))?;
 
         let event_id = *output.id();
-        info!("記事を公開しました。イベント ID: {}", event_id);
+        info!("{}を公開しました。イベント ID: {}", label, event_id);
 
-        // naddr の生成
-        let naddr = if let Some(pk) = self.public_key {
-            let coordinate = Coordinate::new(Kind::LongFormTextNote, pk).identifier(&d_tag);
-            coordinate.to_bech32().ok()
-        } else {
-            None
-        };
+        let naddr = self.public_key.and_then(|pk| {
+            Coordinate::new(kind, pk).identifier(&d_tag).to_bech32().ok()
+        });
 
         Ok(ArticleInfo {
             id: event_id.to_hex(),
@@ -647,135 +680,47 @@ impl NostrClient {
             summary: params.summary,
             image: params.image,
             content: params.content,
-            author: self.public_key
-                .map(|pk| AuthorInfo::from_public_key(&pk)),
+            author: self.public_key.map(|pk| AuthorInfo::from_public_key(&pk)),
             published_at: params.published_at,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+            created_at: current_unix_timestamp(),
             tags: params.tags,
-            is_draft: false,
+            is_draft,
         })
     }
 
-    /// 長文記事 (Kind 30023) を取得します。
-    pub async fn get_articles(&self, author: Option<&str>, tags: Option<&[String]>, limit: u64) -> Result<Vec<ArticleInfo>> {
-        let mut filter = Filter::new()
-            .kind(Kind::LongFormTextNote)
-            .limit(limit as usize);
+    /// 記事/下書きを取得する共通ヘルパー
+    async fn fetch_articles_by_kind(
+        &self,
+        kind: Kind,
+        author: Option<&str>,
+        tags: Option<&[String]>,
+        limit: u64,
+    ) -> Result<Vec<ArticleInfo>> {
+        let is_draft = kind == Kind::from(30024);
 
-        if let Some(author_str) = author {
-            let pk = Self::parse_public_key(author_str)?;
-            filter = filter.author(pk);
-        }
+        // 下書き取得は認証必須
+        let mut filter = if is_draft {
+            let pk = self.public_key
+                .ok_or_else(|| anyhow!("下書きの取得には認証が必要です。設定ファイルに nsec を設定してください。"))?;
+            Filter::new().author(pk).kind(kind).limit(limit as usize)
+        } else {
+            let mut f = Filter::new().kind(kind).limit(limit as usize);
+            if let Some(author_str) = author {
+                let pk = Self::parse_public_key(author_str)?;
+                f = f.author(pk);
+            }
+            f
+        };
 
         if let Some(hashtags) = tags {
             filter = filter.hashtags(hashtags.to_vec());
         }
 
+        let timeout = if is_draft { 10 } else { 15 };
         let events = self.client
-            .fetch_events(vec![filter], Duration::from_secs(15))
+            .fetch_events(vec![filter], Duration::from_secs(timeout))
             .await
-            .context("記事の取得に失敗しました")?;
-
-        let events_vec: Vec<Event> = events.into_iter().collect();
-        let pubkeys = Self::collect_pubkeys(&events_vec);
-        let profiles = self.fetch_profiles(&pubkeys).await;
-
-        let mut articles: Vec<ArticleInfo> = events_vec.iter().map(|event| {
-            Self::event_to_article(event, &profiles)
-        }).collect();
-
-        articles.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        articles.truncate(limit as usize);
-
-        Ok(articles)
-    }
-
-    /// 記事を下書き (Kind 30024) として保存します。
-    pub async fn save_draft(&self, params: ArticleParams) -> Result<ArticleInfo> {
-        self.require_write_access()?;
-
-        let d_tag = params.identifier.unwrap_or_else(|| {
-            slug_from_title(&params.title)
-        });
-
-        let mut tags = vec![
-            Tag::identifier(d_tag.clone()),
-            Tag::custom(TagKind::Title, vec![params.title.clone()]),
-        ];
-
-        if let Some(ref summary) = params.summary {
-            tags.push(Tag::custom(TagKind::custom("summary".to_string()), vec![summary.clone()]));
-        }
-
-        if let Some(ref image) = params.image {
-            tags.push(Tag::custom(TagKind::custom("image".to_string()), vec![image.clone()]));
-        }
-
-        if let Some(ref hashtags) = params.tags {
-            for t in hashtags {
-                tags.push(Tag::hashtag(t.clone()));
-            }
-        }
-
-        // Kind 30024 = Draft Long-form Content
-        let draft_kind = Kind::from(30024);
-
-        let builder = EventBuilder::new(draft_kind, &params.content)
-            .tags(tags);
-
-        let output = self.client.send_event_builder(builder).await
-            .context("下書きの保存に失敗しました")?;
-
-        let event_id = *output.id();
-        info!("下書きを保存しました。イベント ID: {}", event_id);
-
-        let naddr = if let Some(pk) = self.public_key {
-            let coordinate = Coordinate::new(draft_kind, pk).identifier(&d_tag);
-            coordinate.to_bech32().ok()
-        } else {
-            None
-        };
-
-        Ok(ArticleInfo {
-            id: event_id.to_hex(),
-            nevent: event_id.to_bech32().unwrap_or_default(),
-            naddr,
-            identifier: d_tag,
-            title: params.title,
-            summary: params.summary,
-            image: params.image,
-            content: params.content,
-            author: self.public_key
-                .map(|pk| AuthorInfo::from_public_key(&pk)),
-            published_at: params.published_at,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            tags: params.tags,
-            is_draft: true,
-        })
-    }
-
-    /// ユーザーの下書き記事 (Kind 30024) を取得します。
-    pub async fn get_drafts(&self, limit: u64) -> Result<Vec<ArticleInfo>> {
-        let pk = self.public_key
-            .ok_or_else(|| anyhow!("下書きの取得には認証が必要です。設定ファイルに nsec を設定してください。"))?;
-
-        let draft_kind = Kind::from(30024);
-
-        let filter = Filter::new()
-            .author(pk)
-            .kind(draft_kind)
-            .limit(limit as usize);
-
-        let events = self.client
-            .fetch_events(vec![filter], Duration::from_secs(10))
-            .await
-            .context("下書きの取得に失敗しました")?;
+            .context(format!("{}の取得に失敗しました", if is_draft { "下書き" } else { "記事" }))?;
 
         let events_vec: Vec<Event> = events.into_iter().collect();
         let pubkeys = Self::collect_pubkeys(&events_vec);
@@ -783,7 +728,9 @@ impl NostrClient {
 
         let mut articles: Vec<ArticleInfo> = events_vec.iter().map(|event| {
             let mut article = Self::event_to_article(event, &profiles);
-            article.is_draft = true;
+            if is_draft {
+                article.is_draft = true;
+            }
             article
         }).collect();
 
@@ -998,26 +945,25 @@ impl NostrClient {
         replies
     }
 
+    /// イベント ID で単一のイベントを取得するヘルパー
+    async fn fetch_event_by_id(&self, event_id: EventId, context: &str) -> Result<Event> {
+        let filter = Filter::new().id(event_id).limit(1);
+        let events = self.client
+            .fetch_events(vec![filter], Duration::from_secs(5))
+            .await
+            .context(format!("{}の取得に失敗しました", context))?;
+        events
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("{}が見つかりません", context))
+    }
+
     /// ノートにリアクション (Kind 7, NIP-25) を送信します。
     pub async fn react_to_note(&self, note_id: &str, reaction: &str) -> Result<EventId> {
         self.require_write_access()?;
 
         let event_id = Self::parse_event_id(note_id)?;
-
-        // リアクション対象のノートを取得して著者の公開鍵を得る
-        let filter = Filter::new()
-            .id(event_id)
-            .limit(1);
-
-        let events = self.client
-            .fetch_events(vec![filter], Duration::from_secs(5))
-            .await
-            .context("リアクション対象のノートの取得に失敗しました")?;
-
-        let target_event = events
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("リアクション対象のノートが見つかりません: {}", note_id))?;
+        let target_event = self.fetch_event_by_id(event_id, "リアクション対象のノート").await?;
 
         // NIP-25: リアクションイベントを作成
         let builder = EventBuilder::new(Kind::Reaction, reaction)
@@ -1039,21 +985,7 @@ impl NostrClient {
         self.require_write_access()?;
 
         let event_id = Self::parse_event_id(note_id)?;
-
-        // 返信対象のノートを取得
-        let filter = Filter::new()
-            .id(event_id)
-            .limit(1);
-
-        let events = self.client
-            .fetch_events(vec![filter], Duration::from_secs(5))
-            .await
-            .context("返信対象のノートの取得に失敗しました")?;
-
-        let target_event = events
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("返信対象のノートが見つかりません: {}", note_id))?;
+        let target_event = self.fetch_event_by_id(event_id, "返信対象のノート").await?;
 
         // NIP-10: root と reply のマーカーを設定
         // 対象ノート自体にルートがある場合はそれを引き継ぐ
@@ -1813,4 +1745,42 @@ fn extract_tag_value(event: &Event, key: &str) -> Option<String> {
             None
         }
     })
+}
+
+/// 現在の Unix タイムスタンプ（秒）を取得
+fn current_unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 記事/下書きの共通タグを構築するヘルパー
+fn build_article_tags(
+    title: &str,
+    summary: &Option<String>,
+    image: &Option<String>,
+    hashtags: &Option<Vec<String>>,
+    d_tag: &str,
+) -> Vec<Tag> {
+    let mut tags = vec![
+        Tag::identifier(d_tag.to_string()),
+        Tag::custom(TagKind::Title, vec![title.to_string()]),
+    ];
+
+    if let Some(ref s) = summary {
+        tags.push(Tag::custom(TagKind::custom("summary".to_string()), vec![s.clone()]));
+    }
+
+    if let Some(ref img) = image {
+        tags.push(Tag::custom(TagKind::custom("image".to_string()), vec![img.clone()]));
+    }
+
+    if let Some(ref ht) = hashtags {
+        for t in ht {
+            tags.push(Tag::hashtag(t.clone()));
+        }
+    }
+
+    tags
 }

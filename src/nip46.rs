@@ -6,6 +6,9 @@
 //! 2 つの接続方式をサポート:
 //! - クライアント発行方式: `nostrconnect://` URI を QR コードとして表示
 //! - バンカー方式: `bunker://` URI を config に設定
+//!
+//! Step 6-3: 認証モード切り替え
+//! NostrClient と統合し、NIP-46 接続完了後に自動的にサイナーを切り替えます。
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
@@ -258,6 +261,24 @@ impl Nip46Session {
         }
 
         Ok(())
+    }
+
+    /// 接続済みかどうかを確認
+    pub async fn is_connected(&self) -> bool {
+        matches!(&*self.state.read().await, Nip46State::Connected { .. })
+    }
+
+    /// 接続済みユーザーの公開鍵を取得
+    pub async fn connected_pubkey(&self) -> Option<PublicKey> {
+        match &*self.state.read().await {
+            Nip46State::Connected { user_pubkey } => Some(*user_pubkey),
+            _ => None,
+        }
+    }
+
+    /// NIP-46 サイナーを NostrClient に設定するための NostrConnect インスタンスを取得
+    pub async fn get_nostr_connect(&self) -> Option<NostrConnect> {
+        self.signer.read().await.clone()
     }
 
     /// 接続ステータスを JSON 値として取得

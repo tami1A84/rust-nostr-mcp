@@ -34,12 +34,58 @@
       border-radius: var(--border-radius-lg, 12px);
       box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.1));
       margin-bottom: 16px;
+      position: relative;
     }
 
     .qr-container img {
       width: 200px;
       height: 200px;
       image-rendering: pixelated;
+    }
+
+    .qr-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(255,255,255,0.92);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--border-radius-lg, 12px);
+    }
+
+    .qr-overlay .checkmark {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: var(--color-text-success, #00aa44);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 8px;
+      animation: scaleIn 0.3s ease;
+    }
+
+    .qr-overlay .checkmark::after {
+      content: "";
+      display: block;
+      width: 16px;
+      height: 24px;
+      border: 3px solid #fff;
+      border-top: none;
+      border-left: none;
+      transform: rotate(45deg) translateY(-2px);
+    }
+
+    @keyframes scaleIn {
+      from { transform: scale(0); }
+      to { transform: scale(1); }
+    }
+
+    .connect-uri-section {
+      width: 100%;
+      max-width: 340px;
+      margin-bottom: 16px;
     }
 
     .connect-uri {
@@ -50,39 +96,100 @@
       padding: 8px 12px;
       border-radius: var(--border-radius-md, 8px);
       word-break: break-all;
-      max-width: 320px;
-      margin-bottom: 16px;
       cursor: pointer;
       position: relative;
+      transition: background 0.15s;
     }
 
-    .connect-uri:hover::after {
-      content: "Click to copy";
-      position: absolute;
-      top: -24px;
-      left: 50%;
-      transform: translateX(-50%);
-      font-size: 11px;
-      color: var(--color-text-info, #0066cc);
-      white-space: nowrap;
+    .connect-uri:hover {
+      background: var(--color-background-tertiary, #eeeeee);
+    }
+
+    .copy-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 6px;
+      padding: 4px 10px;
+      border: var(--border-width-regular, 1px) solid var(--color-border-secondary, #d0d0d0);
+      border-radius: var(--border-radius-sm, 4px);
+      background: var(--color-background-primary, #ffffff);
+      color: var(--color-text-secondary, #666666);
+      font-size: var(--font-text-xs-size, 11px);
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .copy-btn:hover {
+      background: var(--color-background-secondary, #f5f5f5);
+      color: var(--color-text-primary, #1a1a1a);
+    }
+
+    .copy-btn.copied {
+      color: var(--color-text-success, #00aa44);
+      border-color: var(--color-text-success, #00aa44);
     }
 
     .connect-status {
       margin-top: 12px;
     }
 
-    .connected-user {
+    .connected-card {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 12px;
+      gap: 12px;
+      padding: 14px 16px;
       background: var(--color-background-success, #e8f5e9);
       border-radius: var(--border-radius-md, 8px);
-      margin-top: 12px;
+      margin-top: 16px;
+      width: 100%;
+      max-width: 340px;
     }
 
-    .connected-user-name {
+    .connected-card .avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: var(--border-radius-full, 50%);
+      object-fit: cover;
+      background: var(--color-background-tertiary, #f0f0f0);
+    }
+
+    .connected-card .user-info {
+      text-align: left;
+    }
+
+    .connected-card .user-name {
       font-weight: var(--font-weight-semibold, 600);
+      font-size: var(--font-text-sm-size, 13px);
+    }
+
+    .connected-card .user-nip05 {
+      font-size: var(--font-text-xs-size, 12px);
+      color: var(--color-text-secondary, #666666);
+    }
+
+    .connected-card .user-npub {
+      font-family: var(--font-mono, monospace);
+      font-size: var(--font-text-xs-size, 11px);
+      color: var(--color-text-secondary, #666666);
+    }
+
+    .pulse-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    .pulse-dot.waiting { background: var(--color-text-warning, #cc8800); }
+    .pulse-dot.connected { background: var(--color-text-success, #00aa44); animation: none; }
+    .pulse-dot.error { background: var(--color-text-danger, #cc0000); animation: none; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
     }
   </style>
 </head>
@@ -94,6 +201,8 @@
   <script>
     let rpcId = 0;
     const pending = new Map();
+    let fullUri = "";
+    let pollTimer = null;
 
     function sendRpc(method, params) {
       const id = ++rpcId;
@@ -124,8 +233,10 @@
       } else if (msg.method === "ui/notifications/tool-input") {
         handleToolInput(msg.params);
       } else if (msg.method === "ui/notifications/tool-cancelled") {
+        stopPolling();
         showStatus("Cancelled", "error");
       } else if (msg.method === "ui/resource-teardown") {
+        stopPolling();
         window.parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
       }
     });
@@ -135,7 +246,7 @@
         await sendRpc("ui/initialize", {
           protocolVersion: "2026-01-26",
           capabilities: {},
-          clientInfo: { name: "nostr-connect-qr", version: "0.1.0" },
+          clientInfo: { name: "nostr-connect-qr", version: "0.2.0" },
           appCapabilities: { availableDisplayModes: ["inline"] }
         });
         sendNotification("ui/notifications/initialized", {});
@@ -146,11 +257,12 @@
     }
 
     function handleToolInput(params) {
-      // May receive connection URI during streaming
+      // Input arguments available before result
     }
 
     function handleToolResult(params) {
       if (params.isError) {
+        stopPolling();
         showStatus(params.content?.[0]?.text || "Connection failed", "error");
         return;
       }
@@ -158,14 +270,49 @@
         const text = params.content?.[0]?.text || "{}";
         const data = JSON.parse(text);
         if (data.qr_base64 && data.connect_uri) {
+          fullUri = data.connect_uri;
           renderQR(data);
-        } else if (data.connected && data.user) {
+          startPolling();
+        } else if (data.connected || (data.connection?.status === "connected")) {
+          stopPolling();
+          renderConnected(data);
+        } else if (data.status === "connected" || data.signer_active) {
+          stopPolling();
           renderConnected(data);
         } else if (data.status) {
-          showStatus(data.message || data.status, data.status === "connected" ? "connected" : "waiting");
+          showStatus(data.message || data.status, data.status === "error" ? "error" : "waiting");
         }
       } catch (e) {
         showStatus("Waiting for connection...", "waiting");
+      }
+    }
+
+    function startPolling() {
+      stopPolling();
+      pollTimer = setInterval(async () => {
+        try {
+          const result = await sendRpc("tools/call", {
+            name: "nostr_connect_status",
+            arguments: {}
+          });
+          const text = result?.content?.[0]?.text;
+          if (text) {
+            const data = JSON.parse(text);
+            if (data.signer_active || data.connection?.status === "connected") {
+              stopPolling();
+              renderConnectedFromStatus(data);
+            }
+          }
+        } catch (e) {
+          // Polling error - ignore and retry
+        }
+      }, 3000);
+    }
+
+    function stopPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
       }
     }
 
@@ -177,7 +324,7 @@
         <div class="connect-description">Scan the QR code with your Nostr signer app (Primal, Amber, etc.) to connect securely.</div>
         <div class="connect-status">
           <span class="status-indicator">
-            <span class="status-dot waiting"></span>
+            <span class="pulse-dot waiting"></span>
             Waiting for QR code...
           </span>
         </div>
@@ -189,14 +336,17 @@
       app.className = "";
       app.innerHTML = `<div class="connect-container">
         <div class="connect-title">Nostr Connect (NIP-46)</div>
-        <div class="connect-description">Scan with your Nostr signer app to log in.</div>
-        <div class="qr-container">
+        <div class="connect-description">Scan with your Nostr signer app to log in securely.</div>
+        <div class="qr-container" id="qr-box">
           <img src="data:image/png;base64,${data.qr_base64}" alt="QR Code">
         </div>
-        <div class="connect-uri" onclick="copyUri(this)" title="Click to copy">${escapeHtml(truncateUri(data.connect_uri))}</div>
+        <div class="connect-uri-section">
+          <div class="connect-uri" id="uri-text">${escapeHtml(truncateUri(data.connect_uri))}</div>
+          <button class="copy-btn" onclick="copyUri()">Copy URI</button>
+        </div>
         <div class="connect-status">
           <span class="status-indicator">
-            <span class="status-dot waiting"></span>
+            <span class="pulse-dot waiting"></span>
             Waiting for connection...
           </span>
         </div>
@@ -205,41 +355,81 @@
 
     function renderConnected(data) {
       const user = data.user || {};
-      const app = document.getElementById("app");
-      app.className = "";
-      app.innerHTML = `<div class="connect-container">
-        <div class="connect-title">Connected!</div>
-        <div class="connect-status">
-          <span class="status-indicator">
-            <span class="status-dot connected"></span>
-            Connected via NIP-46
-          </span>
-        </div>
-        <div class="connected-user">
-          ${user.picture ? `<img class="author-avatar" src="${escapeAttr(user.picture)}" alt="">` : ""}
-          <div>
-            <div class="connected-user-name">${escapeHtml(user.display_name || user.name || "")}</div>
-            ${user.nip05 ? `<div class="author-nip05">@${escapeHtml(user.nip05)}</div>` : ""}
-          </div>
-        </div>
-      </div>`;
+      const npub = data.user_npub || data.connection?.user_npub || "";
+      renderConnectedUI(user.display_name || user.name || "", user.nip05 || "", user.picture || "", npub);
+    }
+
+    function renderConnectedFromStatus(data) {
+      const conn = data.connection || {};
+      const npub = conn.user_npub || "";
+      renderConnectedUI("", "", "", npub);
+    }
+
+    function renderConnectedUI(name, nip05, picture, npub) {
+      // Show overlay on QR if visible
+      const qrBox = document.getElementById("qr-box");
+      if (qrBox) {
+        const overlay = document.createElement("div");
+        overlay.className = "qr-overlay";
+        overlay.innerHTML = `<div class="checkmark"></div><div style="font-weight:600;color:var(--color-text-success,#00aa44)">Connected</div>`;
+        qrBox.appendChild(overlay);
+      }
+
+      // Update status
+      const statusEl = document.querySelector(".connect-status");
+      if (statusEl) {
+        statusEl.innerHTML = `<span class="status-indicator">
+          <span class="pulse-dot connected"></span>
+          Connected via NIP-46
+        </span>`;
+      }
+
+      // Add connected user card if we have info
+      if (name || npub) {
+        const container = document.querySelector(".connect-container");
+        if (container) {
+          const existing = document.getElementById("connected-card");
+          if (existing) existing.remove();
+
+          const card = document.createElement("div");
+          card.id = "connected-card";
+          card.className = "connected-card";
+          card.innerHTML = `
+            ${picture ? `<img class="avatar" src="${escapeAttr(picture)}" alt="">` : ""}
+            <div class="user-info">
+              ${name ? `<div class="user-name">${escapeHtml(name)}</div>` : ""}
+              ${nip05 ? `<div class="user-nip05">@${escapeHtml(nip05)}</div>` : ""}
+              ${npub ? `<div class="user-npub">${escapeHtml(shortKey(npub))}</div>` : ""}
+            </div>`;
+          container.appendChild(card);
+        }
+      }
     }
 
     function showStatus(msg, state) {
       const statusEl = document.querySelector(".connect-status");
       if (statusEl) {
         statusEl.innerHTML = `<span class="status-indicator">
-          <span class="status-dot ${state}"></span>
+          <span class="pulse-dot ${state}"></span>
           ${escapeHtml(msg)}
         </span>`;
       }
     }
 
-    function copyUri(el) {
-      if (navigator.clipboard && el.dataset.uri) {
-        navigator.clipboard.writeText(el.dataset.uri);
-        el.textContent = "Copied!";
-        setTimeout(() => { el.textContent = truncateUri(el.dataset.uri); }, 2000);
+    function copyUri() {
+      if (!fullUri) return;
+      const btn = document.querySelector(".copy-btn");
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(fullUri).then(() => {
+          if (btn) {
+            btn.textContent = "Copied!";
+            btn.classList.add("copied");
+            setTimeout(() => {
+              btn.textContent = "Copy URI";
+              btn.classList.remove("copied");
+            }, 2000);
+          }
+        });
       }
     }
 
@@ -248,14 +438,19 @@
       return uri || "";
     }
 
+    function shortKey(npub) {
+      if (!npub || npub.length < 16) return npub || "";
+      return npub.slice(0, 12) + "..." + npub.slice(-4);
+    }
+
     function escapeHtml(str) {
       const div = document.createElement("div");
-      div.textContent = str;
+      div.textContent = str || "";
       return div.innerHTML;
     }
 
     function escapeAttr(str) {
-      return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return (str || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
     init();
