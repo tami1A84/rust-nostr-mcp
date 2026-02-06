@@ -1,409 +1,26 @@
-# Nostr MCP Server
+# Nostr MCP サーバー
 
-A Model Context Protocol (MCP) server that enables AI agents like Claude to interact with the Nostr network.
-
-[日本語ドキュメント](#日本語) | [English Documentation](#overview)
+Claude などの AI エージェントが Nostr ネットワークと対話するための Model Context Protocol (MCP) サーバーです。
 
 ---
-
-## Overview
-
-This server provides a bridge between AI assistants and the Nostr decentralized social network. It allows AI agents to:
-
-- Post notes to Nostr
-- Read timelines (personal or global)
-- Search for notes
-- Retrieve user profiles
-
-## Installation
-
-### Prerequisites
-
-- Rust (latest stable version)
-- A Nostr secret key (nsec) for write access (optional)
-
-### Building from Source
-
-```bash
-git clone https://github.com/tami1A84/rust-nostr-mcp.git
-cd rust-nostr-mcp
-cargo build --release
-```
-
-The binary will be available at `target/release/nostr-mcp-server`.
-
-## Configuration
-
-### Config File (Recommended)
-
-The server uses a configuration file at `~/.config/rust-nostr-mcp/config.json`. This follows the [algia](https://github.com/mattn/algia) convention.
-
-**Important:** Your private key is stored locally and **never passed to AI agents**.
-
-```json
-{
-  "relays": {
-    "wss://relay.damus.io": { "read": true, "write": true, "search": false },
-    "wss://nos.lol": { "read": true, "write": true, "search": false },
-    "wss://relay.nostr.band": { "read": true, "write": true, "search": true },
-    "wss://nostr.wine": { "read": true, "write": false, "search": true },
-    "wss://relay.snort.social": { "read": true, "write": true, "search": false }
-  },
-  "privatekey": "nsec1..."
-}
-```
-
-**Relay options:**
-- `read`: Fetch events from this relay
-- `write`: Publish events to this relay
-- `search`: Use for NIP-50 search queries
-
-A default config file is created automatically on first run.
-
-### Environment Variables (Legacy)
-
-For backward compatibility, you can also use environment variables:
-
-```bash
-# Required for write access (posting notes)
-# Use either NSEC or NOSTR_SECRET_KEY
-NSEC=nsec1...
-
-# Or in hex format
-# NOSTR_SECRET_KEY=...
-
-# Optional: Custom relay list (comma-separated)
-NOSTR_RELAYS=wss://relay.damus.io,wss://nos.lol,wss://relay.nostr.band
-
-# Optional: Search-capable relays for NIP-50 search (comma-separated)
-NOSTR_SEARCH_RELAYS=wss://relay.nostr.band,wss://nostr.wine
-
-# Optional: Logging level
-RUST_LOG=info
-```
-
-### Default Relays
-
-If not specified, the server uses these relays:
-
-**General relays:**
-- `wss://relay.damus.io`
-- `wss://nos.lol`
-- `wss://relay.nostr.band`
-- `wss://nostr.wine`
-- `wss://relay.snort.social`
-
-**Search relays (NIP-50):**
-- `wss://relay.nostr.band`
-- `wss://nostr.wine`
-
-## Usage
-
-### Claude Desktop Configuration
-
-Add the following to your Claude Desktop configuration file:
-
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-
-**Linux:** `~/.config/Claude/claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "nostr": {
-      "command": "/path/to/nostr-mcp-server"
-    }
-  }
-}
-```
-
-**Note:** Configure your private key in `~/.config/rust-nostr-mcp/config.json` instead of passing it via environment variables. This is more secure as the key is never exposed to the AI agent.
-
-### Goose Configuration
-
-[Goose](https://github.com/block/goose) is an AI coding assistant by Block that supports MCP servers.
-
-Add the following to your Goose configuration file:
-
-**Location:** `~/.config/goose/config.yaml`
-
-```yaml
-extensions:
-  nostr:
-    name: nostr
-    type: stdio
-    enabled: true
-    cmd: /path/to/nostr-mcp-server
-```
-
-Or configure via CLI:
-
-```bash
-goose configure
-# Select "Add Extension" -> "Command-line Extension"
-# Name: nostr
-# Command: /path/to/nostr-mcp-server
-```
-
-**Note:** Your private key should be configured in `~/.config/rust-nostr-mcp/config.json`, not in environment variables.
-
-### Other MCP Clients
-
-This server works with any MCP-compatible client. The server communicates via JSON-RPC 2.0 over stdio.
-
-### Read-Only Mode
-
-If no secret key is provided, the server runs in read-only mode. You can still:
-- Get timelines (global)
-- Search notes
-- Get user profiles
-
-But you cannot post notes.
-
-## Available Tools
-
-Tool names follow the [algia](https://github.com/mattn/algia) convention with `nostr_` prefix.
-
-### 1. `post_nostr_note`
-
-Post a new short text note (Kind 1) to the Nostr network.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `content` | string | Yes | The text content of the note to post |
-
-**Example:**
-```json
-{
-  "name": "post_nostr_note",
-  "arguments": {
-    "content": "Hello, Nostr!"
-  }
-}
-```
-
-### 2. `get_nostr_timeline`
-
-Get the latest notes from the timeline. Returns notes from followed users if authenticated, otherwise returns the global timeline.
-
-**Parameters:**
-| Name | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| `limit` | number | No | 20 | Maximum number of notes (1-100) |
-
-**Example:**
-```json
-{
-  "name": "get_nostr_timeline",
-  "arguments": {
-    "limit": 10
-  }
-}
-```
-
-### 3. `search_nostr_notes`
-
-Search for notes containing specified keywords using NIP-50 search-capable relays.
-
-**Parameters:**
-| Name | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| `query` | string | Yes | - | The search query string |
-| `limit` | number | No | 20 | Maximum number of results (1-100) |
-
-**Example:**
-```json
-{
-  "name": "search_nostr_notes",
-  "arguments": {
-    "query": "bitcoin",
-    "limit": 15
-  }
-}
-```
-
-### 4. `get_nostr_profile`
-
-Get profile information for a Nostr user by their public key.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `pubkey` | string | Yes | Public key in npub (bech32) or hex format |
-
-**Example:**
-```json
-{
-  "name": "get_nostr_profile",
-  "arguments": {
-    "pubkey": "npub1..."
-  }
-}
-```
-
-## Use Cases
-
-Here are some example prompts you can use with Claude or Goose:
-
-- "What's happening on Nostr right now?" (get_nostr_timeline)
-- "Post a note saying 'Good morning, Nostr!'" (post_nostr_note)
-- "Search for discussions about Bitcoin on Nostr" (search_nostr_notes)
-- "Who is npub1...? Get their profile." (get_nostr_profile)
-- "Summarize today's news from Nostr and post a summary"
-- "Post my daily report: [content]"
-
-## Security Recommendations
-
-### Recommended Usage Patterns
-
-This MCP server supports different security levels depending on your needs:
-
-#### General Users (This Implementation)
-
-- **Best for:** Ease of use, local PC or server environments
-- **Setup:** Store secret key in `.env` file
-- **Use cases:**
-  - "Summarize today's news from Nostr"
-  - "Post my daily report"
-  - Personal automation and AI assistance
-- **Security:** The secret key is stored on the file system. Ensure proper file permissions (e.g., `chmod 600 .env`)
-
-#### High-Security Users (Alternative Implementation)
-
-- **Best for:** Users who don't want to store keys on the file system
-- **Requires:** KeePassXC integration
-- **Use cases:**
-  - When you want human approval for every post
-  - When AI should not have direct signing authority
-  - Shared or multi-user environments
-- **Setup:** Implement a separate MCP server that:
-  1. Requests signatures from KeePassXC for each operation
-  2. Requires user confirmation for every signing request
-  3. Never stores the secret key on disk
-
-### Best Practices
-
-1. **Never commit your `.env` file** - Add it to `.gitignore`
-2. **Use dedicated Nostr keys** - Don't use your main identity
-3. **Review AI actions** - Monitor what the AI posts on your behalf
-4. **Limit relay exposure** - Only connect to trusted relays
-5. **Regular key rotation** - Consider rotating keys periodically
-
-## Development
-
-### Building
-
-```bash
-# Debug build
-cargo build
-
-# Release build
-cargo build --release
-
-# Run with logging
-RUST_LOG=debug cargo run
-```
-
-### Testing the Server
-
-You can test the server by sending JSON-RPC requests via stdin:
-
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | cargo run
-```
-
-### Project Structure
-
-```
-nostr-mcp-server/
-├── Cargo.toml           # Project dependencies
-├── README.md            # This file
-├── CLAUDE.md            # Development plan
-├── LICENSE              # MIT License
-└── src/
-    ├── main.rs          # Entry point and configuration
-    ├── config.rs        # Configuration file management
-    ├── mcp.rs           # MCP server implementation
-    ├── nostr_client.rs  # Nostr SDK wrapper
-    └── tools.rs         # Tool definitions and execution
-```
-
-## Dependencies
-
-- [nostr-sdk](https://github.com/rust-nostr/nostr) - Nostr protocol implementation
-- [tokio](https://tokio.rs/) - Async runtime
-- [serde](https://serde.rs/) - Serialization/deserialization
-- [dotenvy](https://github.com/allan2/dotenvy) - Environment variable loading
-- [anyhow](https://github.com/dtolnay/anyhow) - Error handling
-- [tracing](https://github.com/tokio-rs/tracing) - Logging
-
-## Protocol
-
-This server implements the Model Context Protocol (MCP) using JSON-RPC 2.0 over stdio. For more information about MCP, see the [MCP Specification](https://spec.modelcontextprotocol.io/).
-
-## Troubleshooting
-
-### "Cannot post notes in read-only mode"
-
-Set the `NSEC` or `NOSTR_SECRET_KEY` environment variable with a valid Nostr secret key.
-
-### "Profile not found"
-
-The user may not have published their profile metadata (Kind 0 event), or the profile may not be available on the connected relays.
-
-### Connection timeouts
-
-Try adding more relays or checking your network connection. The server waits up to 10 seconds for relay responses.
-
-### Search returns no results
-
-Make sure the search relays support NIP-50. Not all relays implement search functionality.
-
-## License
-
-MIT License - See [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Related Projects
-
-- [nostr-sdk](https://github.com/rust-nostr/nostr) - The Nostr SDK for Rust
-- [rust-nostr.org](https://rust-nostr.org/) - Documentation for rust-nostr
-- [Goose](https://github.com/block/goose) - AI coding assistant by Block
-
-## Acknowledgments
-
-- The [Nostr](https://nostr.com/) community
-- [Anthropic](https://anthropic.com/) for Claude and the MCP specification
-- [Block](https://block.xyz/) for Goose
-- Contributors to the rust-nostr ecosystem
-
----
-
-# 日本語
 
 ## 概要
 
-Nostr MCP Server は、Claude などの AI エージェントが Nostr ネットワークと対話できるようにする Model Context Protocol (MCP) サーバーです。
+このサーバーは、AI アシスタントと Nostr 分散型ソーシャルネットワークの橋渡しを提供します。AI エージェントが以下の操作を行えるようになります：
 
-### 主な機能
-
-- **ノートの投稿** - Nostr にショートテキストノート (Kind 1) を投稿
-- **タイムラインの取得** - フォロー中のユーザーまたはグローバルタイムラインを取得
-- **ノートの検索** - NIP-50 対応リレーでキーワード検索
-- **プロフィールの取得** - ユーザーのプロフィール情報を取得
+- Nostr にノートを投稿
+- タイムラインの取得（パーソナライズまたはグローバル）
+- ノートの検索
+- ユーザープロフィールの取得
+- 長文記事 (NIP-23) の投稿・取得
+- 記事の下書き保存・管理
 
 ## インストール
 
 ### 必要条件
 
-- Rust (最新の安定版)
-- Nostr 秘密鍵 (nsec) - 書き込みアクセスに必要 (任意)
+- Rust（最新の安定版）
+- Nostr 秘密鍵 (nsec) - 書き込みアクセスに必要（任意）
 
 ### ソースからビルド
 
@@ -417,7 +34,7 @@ cargo build --release
 
 ## 設定
 
-### 設定ファイル (推奨)
+### 設定ファイル（推奨）
 
 サーバーは `~/.config/rust-nostr-mcp/config.json` の設定ファイルを使用します。これは [algia](https://github.com/mattn/algia) の規則に従っています。
 
@@ -443,22 +60,22 @@ cargo build --release
 
 初回起動時にデフォルト設定ファイルが自動的に作成されます。
 
-### 環境変数 (レガシー)
+### 環境変数（レガシー）
 
 後方互換性のため、環境変数も使用できます：
 
 ```bash
-# 書き込みアクセスに必要 (ノート投稿用)
+# 書き込みアクセスに必要（ノート投稿用）
 # NSEC または NOSTR_SECRET_KEY のいずれかを使用
 NSEC=nsec1...
 
 # または16進数形式
 # NOSTR_SECRET_KEY=...
 
-# オプション: カスタムリレーリスト (カンマ区切り)
+# オプション: カスタムリレーリスト（カンマ区切り）
 NOSTR_RELAYS=wss://relay.damus.io,wss://nos.lol,wss://relay.nostr.band
 
-# オプション: NIP-50 検索対応リレー (カンマ区切り)
+# オプション: NIP-50 検索対応リレー（カンマ区切り）
 NOSTR_SEARCH_RELAYS=wss://relay.nostr.band,wss://nostr.wine
 
 # オプション: ログレベル
@@ -532,14 +149,19 @@ goose configure
 
 **注意:** 秘密鍵は環境変数ではなく `~/.config/rust-nostr-mcp/config.json` で設定してください。
 
+### その他の MCP クライアント
+
+このサーバーは MCP 互換のすべてのクライアントで動作します。JSON-RPC 2.0 over stdio で通信します。
+
 ### 読み取り専用モード
 
 秘密鍵が設定されていない場合、サーバーは読み取り専用モードで起動します。以下の機能は使用可能です：
-- タイムラインの取得 (グローバル)
+- タイムラインの取得（グローバル）
 - ノートの検索
 - プロフィールの取得
+- 記事の取得
 
-ただし、ノートの投稿はできません。
+ただし、ノートの投稿、記事の投稿、下書きの保存はできません。
 
 ## 利用可能なツール
 
@@ -623,6 +245,100 @@ NIP-50 対応リレーを使用してキーワードでノートを検索しま�
 }
 ```
 
+### 5. `post_nostr_article`
+
+Nostr ネットワークに長文記事 (Kind 30023, NIP-23) を投稿します。
+
+**パラメータ:**
+| 名前 | 型 | 必須 | 説明 |
+|------|------|------|------|
+| `title` | string | はい | 記事のタイトル |
+| `content` | string | はい | Markdown 形式の記事本文 |
+| `summary` | string | いいえ | 記事の要約 |
+| `image` | string | いいえ | ヘッダー画像の URL |
+| `tags` | array | いいえ | トピックハッシュタグ |
+| `published_at` | number | いいえ | 公開日時の Unix タイムスタンプ |
+| `identifier` | string | いいえ | 記事の識別子（d タグ） |
+
+**例:**
+```json
+{
+  "name": "post_nostr_article",
+  "arguments": {
+    "title": "Nostr プロトコル入門",
+    "content": "# はじめに\n\nNostr は分散型ソーシャルプロトコルです...",
+    "summary": "Nostr プロトコルの基本的な仕組みを解説します",
+    "tags": ["nostr", "protocol", "入門"]
+  }
+}
+```
+
+### 6. `get_nostr_articles`
+
+Nostr ネットワークから長文記事 (Kind 30023) を取得します。
+
+**パラメータ:**
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+|------|------|------|------|------|
+| `author` | string | いいえ | - | 著者の公開鍵でフィルタ |
+| `tags` | array | いいえ | - | ハッシュタグでフィルタ |
+| `limit` | number | いいえ | 20 | 取得する記事の最大数 (1-100) |
+
+**例:**
+```json
+{
+  "name": "get_nostr_articles",
+  "arguments": {
+    "tags": ["bitcoin"],
+    "limit": 5
+  }
+}
+```
+
+### 7. `save_nostr_draft`
+
+記事を下書き (Kind 30024) として保存します。
+
+**パラメータ:**
+| 名前 | 型 | 必須 | 説明 |
+|------|------|------|------|
+| `title` | string | はい | 記事のタイトル |
+| `content` | string | はい | Markdown 形式の記事本文 |
+| `summary` | string | いいえ | 記事の要約 |
+| `image` | string | いいえ | ヘッダー画像の URL |
+| `tags` | array | いいえ | トピックハッシュタグ |
+| `identifier` | string | いいえ | 記事の識別子（d タグ） |
+
+**例:**
+```json
+{
+  "name": "save_nostr_draft",
+  "arguments": {
+    "title": "執筆中の記事",
+    "content": "# 下書き\n\nまだ完成していない記事です..."
+  }
+}
+```
+
+### 8. `get_nostr_drafts`
+
+自分の下書き記事を取得します。認証が必要です。
+
+**パラメータ:**
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+|------|------|------|------|------|
+| `limit` | number | いいえ | 20 | 取得する下書きの最大数 (1-100) |
+
+**例:**
+```json
+{
+  "name": "get_nostr_drafts",
+  "arguments": {
+    "limit": 10
+  }
+}
+```
+
 ## 使用例
 
 Claude や Goose で使えるプロンプトの例：
@@ -632,7 +348,10 @@ Claude や Goose で使えるプロンプトの例：
 - 「Nostr でビットコインに関する議論を検索して」 (search_nostr_notes)
 - 「npub1... は誰？プロフィールを取得して」 (get_nostr_profile)
 - 「今日の Nostr のニュースを要約して投稿して」
-- 「日報を投稿して: [内容]」
+- 「Bitcoin に関する最新の Nostr 記事を探して要約して」 (get_nostr_articles)
+- 「Rust 勉強会の内容を長文記事として Nostr に投稿して」 (post_nostr_article)
+- 「この記事を下書きとして保存して」 (save_nostr_draft)
+- 「保存した下書きの一覧を見せて」 (get_nostr_drafts)
 
 ## セキュリティに関する推奨事項
 
@@ -640,17 +359,17 @@ Claude や Goose で使えるプロンプトの例：
 
 この MCP サーバーは、ニーズに応じて異なるセキュリティレベルをサポートしています：
 
-#### 一般ユーザー向け (本実装)
+#### 一般ユーザー向け（本実装）
 
 - **適している用途:** 手軽さ重視、ローカル PC やサーバー環境での利用
-- **設定方法:** `.env` ファイルに秘密鍵を保存
+- **設定方法:** 設定ファイルに秘密鍵を保存
 - **ユースケース:**
   - 「今日の Nostr のニュースを要約して」
   - 「日報を投稿して」
   - 個人的な自動化や AI アシスタント
-- **セキュリティ:** 秘密鍵はファイルシステムに保存されます。適切なファイル権限を設定してください（例: `chmod 600 .env`）
+- **セキュリティ:** 秘密鍵はファイルシステムに保存されます。適切なファイル権限を設定してください（例: `chmod 600 config.json`）
 
-#### 高セキュリティユーザー向け (別実装)
+#### 高セキュリティユーザー向け（別実装）
 
 - **適している用途:** ファイルシステムに鍵を保存したくないユーザー
 - **必要なもの:** KeePassXC 連携
@@ -665,7 +384,7 @@ Claude や Goose で使えるプロンプトの例：
 
 ### ベストプラクティス
 
-1. **`.env` ファイルをコミットしない** - `.gitignore` に追加
+1. **設定ファイルをコミットしない** - `.gitignore` に追加
 2. **専用の Nostr 鍵を使用** - メインのアイデンティティは使わない
 3. **AI のアクションを確認** - AI があなたの代わりに何を投稿しているか監視
 4. **リレーの露出を制限** - 信頼できるリレーにのみ接続
@@ -694,6 +413,12 @@ stdin 経由で JSON-RPC リクエストを送信してテストできます：
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | cargo run
 ```
 
+MCP インスペクターを使用したテスト：
+
+```bash
+npx @anthropics/mcp-inspector cargo run
+```
+
 ### プロジェクト構成
 
 ```
@@ -701,7 +426,7 @@ nostr-mcp-server/
 ├── Cargo.toml           # プロジェクト依存関係
 ├── README.md            # このファイル
 ├── CLAUDE.md            # 開発計画
-├── LICENSE              # MIT ライセンス
+├── LICENSE              # ライセンス
 └── src/
     ├── main.rs          # エントリーポイントと設定
     ├── config.rs        # 設定ファイル管理
@@ -710,11 +435,25 @@ nostr-mcp-server/
     └── tools.rs         # ツール定義と実行
 ```
 
+## 依存関係
+
+- [nostr-sdk](https://github.com/rust-nostr/nostr) - Nostr プロトコル実装
+- [tokio](https://tokio.rs/) - 非同期ランタイム
+- [serde](https://serde.rs/) - シリアライゼーション/デシリアライゼーション
+- [dotenvy](https://github.com/allan2/dotenvy) - 環境変数読み込み
+- [anyhow](https://github.com/dtolnay/anyhow) - エラーハンドリング
+- [tracing](https://github.com/tokio-rs/tracing) - ロギング
+- [chrono](https://github.com/chronotope/chrono) - 日時処理
+
+## プロトコル
+
+このサーバーは Model Context Protocol (MCP) を JSON-RPC 2.0 over stdio で実装しています。MCP の詳細は [MCP 仕様](https://spec.modelcontextprotocol.io/) を参照してください。
+
 ## トラブルシューティング
 
-### 「読み取り専用モードではノートを投稿できません」
+### 「読み取り専用モードではこの操作はできません」
 
-`NSEC` または `NOSTR_SECRET_KEY` 環境変数に有効な Nostr 秘密鍵を設定してください。
+設定ファイル `~/.config/rust-nostr-mcp/config.json` に有効な Nostr 秘密鍵 (nsec) を設定してください。
 
 ### 「プロフィールが見つかりません」
 
@@ -727,6 +466,10 @@ nostr-mcp-server/
 ### 検索結果が返されない
 
 検索リレーが NIP-50 をサポートしていることを確認してください。すべてのリレーが検索機能を実装しているわけではありません。
+
+### 記事の取得に失敗する
+
+NIP-23 (Kind 30023) をサポートするリレーに接続していることを確認してください。`relay.nostr.band` は長文コンテンツの取得に対応しています。
 
 ## ライセンス
 
@@ -741,6 +484,7 @@ MIT ライセンス - 詳細は [LICENSE](LICENSE) を参照してください�
 - [nostr-sdk](https://github.com/rust-nostr/nostr) - Rust 用 Nostr SDK
 - [rust-nostr.org](https://rust-nostr.org/) - rust-nostr のドキュメント
 - [Goose](https://github.com/block/goose) - Block 社の AI コーディングアシスタント
+- [algia](https://github.com/mattn/algia) - Nostr CLI クライアント
 
 ## 謝辞
 

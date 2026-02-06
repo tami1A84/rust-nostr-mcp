@@ -1,6 +1,6 @@
 [package]
 name = "nostr-mcp-server"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Nostr MCP Server Contributors"]
 description = "A Model Context Protocol (MCP) server for Nostr, enabling AI agents to interact with the Nostr network"
