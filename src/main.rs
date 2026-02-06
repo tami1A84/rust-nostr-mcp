@@ -7,6 +7,7 @@
 //! 秘密鍵はローカルに保存され、AI エージェントには渡されません。
 
 mod config;
+mod content;
 mod mcp;
 mod nostr_client;
 mod tools;

@@ -4,7 +4,7 @@
 
 これは Model Context Protocol (MCP) サーバーで、AI エージェントが Nostr ネットワークと対話できるようにします。秘密鍵をローカルに保存し、AI エージェントには渡さないセキュリティベストプラクティスに従っています。
 
-## 現在の機能 (v0.3.0)
+## 現在の機能 (v0.4.0)
 
 ### セキュリティ
 - **安全な鍵管理**: 秘密鍵を `~/.config/rust-nostr-mcp/config.json` に保存
@@ -29,59 +29,35 @@
 - `reply_to_note` - 既存ノートに返信（NIP-10 マーカー対応）
 - `get_nostr_notifications` - メンション・リアクション通知を取得
 
+### Phase 3: UI/UX の改善（実装済み）
+
+#### 構造化ノート表示（display_card）
+- ノートに `display_card` オブジェクトを追加（header, content, footer）
+- header: 「表示名 (@nip05)」形式
+- footer: 「N リアクション · N リプライ · 時間」形式
+
+#### リッチメディアサポート
+- コンテンツから画像 URL を自動検出（jpg, png, gif, webp, svg, avif 等）
+- 動画 URL の検出（mp4, webm, mov 等）
+- 音声 URL の検出（mp3, ogg, wav, flac 等）
+- `media` オブジェクトとして出力（images, videos, audios）
+
+#### コンテンツフォーマット（parsed_content）
+- ハッシュタグの自動パース（#tag → hashtags 配列）
+- Nostr 参照の検出（NIP-27: nostr:npub1..., nostr:note1..., nostr:nevent1... 等）
+- 記事コンテンツにも同様の解析を適用
+
+#### プロフィールカード（profile_card）
+- `get_nostr_profile` に `profile_card` オブジェクトを追加
+- avatar, name, nip05, bio を構造化表示
+- 統計情報（stats）: following, followers, notes 数を取得・表示
+
 ### モダンな表示形式
 - 著者情報を含む（name、display_name、picture、nip05）
 - 相対タイムスタンプ（例: 「5分前」「2時間前」）
 - nevent リンクでの簡単な参照
 - naddr エンコーディング対応（長文記事用）
 - リアクション数・リプライ数のタイムライン表示
-
----
-
-### Phase 3: UI/UX の改善
-
-#### 目標
-出力を AI フレンドリーかつ視覚的に構造化。
-
-#### 改善項目
-
-1. **構造化ノート表示**
-   ```json
-   {
-     "display_card": {
-       "header": "ユーザー名 (@nip05)",
-       "content": "ノートの内容...",
-       "footer": "42 リアクション · 5 リプライ · 2時間前"
-     }
-   }
-   ```
-
-2. **リッチメディアサポート**
-   - コンテンツから画像 URL を検出
-   - 動画/音声リンクの検出
-   - nostr:// 参照のサポート
-
-3. **コンテンツフォーマット**
-   - ハッシュタグとメンションのパース
-   - 引用ノートのハイライト (NIP-27)
-   - 長文コンテンツでのコードブロックフォーマット
-
-4. **プロフィールカード**
-   ```json
-   {
-     "profile_card": {
-       "avatar": "picture_url",
-       "name": "表示名",
-       "nip05": "user@domain.com",
-       "bio": "自己紹介文...",
-       "stats": {
-         "following": 150,
-         "followers": 500,
-         "notes": 1234
-       }
-     }
-   }
-   ```
 
 ---
 
@@ -98,7 +74,7 @@
 | NIP-19 | bech32 エンコーディング | 実装済み |
 | NIP-23 | 長文コンテンツ | 実装済み |
 | NIP-25 | リアクション | 実装済み |
-| NIP-27 | nostr: 参照 | Phase 3 |
+| NIP-27 | nostr: 参照 | 実装済み |
 | NIP-50 | 検索 | 実装済み |
 | NIP-57 | Zaps | Phase 4 |
 | NIP-65 | リレーリスト | Phase 4 |
@@ -366,6 +342,7 @@ AI Agent:
 src/
 ├── main.rs          # エントリーポイント、設定読み込み
 ├── config.rs        # 設定管理
+├── content.rs       # コンテンツ解析（メディア・ハッシュタグ・NIP-27 参照）
 ├── mcp.rs           # MCP プロトコルハンドラ
 ├── nostr_client.rs  # Nostr SDK ラッパー
 └── tools.rs         # ツール定義とエグゼキュータ
