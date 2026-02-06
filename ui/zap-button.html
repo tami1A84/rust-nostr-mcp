@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zap</title>
+  <style>
+    {{COMMON_CSS}}
+
+    .zap-container {
+      padding: 16px;
+    }
+
+    .zap-header {
+      font-size: var(--font-heading-xs-size, 16px);
+      font-weight: var(--font-weight-semibold, 600);
+      margin-bottom: 12px;
+    }
+
+    .zap-comment-input {
+      width: 100%;
+      padding: 8px 12px;
+      border: var(--border-width-regular, 1px) solid var(--color-border-secondary, #d0d0d0);
+      border-radius: var(--border-radius-md, 8px);
+      background: var(--color-background-primary, #ffffff);
+      color: var(--color-text-primary, #1a1a1a);
+      font-family: inherit;
+      font-size: var(--font-text-sm-size, 13px);
+      outline: none;
+      resize: none;
+    }
+
+    .zap-comment-input:focus {
+      border-color: var(--color-border-info, #0066cc);
+    }
+
+    .zap-send-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 10px;
+      margin-top: 12px;
+      border: none;
+      border-radius: var(--border-radius-md, 8px);
+      background: var(--color-background-warning, #fff8e0);
+      color: var(--color-text-warning, #cc8800);
+      font-family: inherit;
+      font-size: var(--font-text-md-size, 14px);
+      font-weight: var(--font-weight-semibold, 600);
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    .zap-send-btn:hover {
+      opacity: 0.9;
+    }
+
+    .zap-send-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .zap-result {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: var(--border-radius-md, 8px);
+      font-size: var(--font-text-sm-size, 13px);
+    }
+
+    .zap-result.success {
+      background: var(--color-background-success, #e8f5e9);
+      color: var(--color-text-success, #00aa44);
+    }
+
+    .zap-result.error {
+      background: var(--color-background-danger, #fff0f0);
+      color: var(--color-text-danger, #cc0000);
+    }
+
+    .zap-receipts {
+      margin-top: 16px;
+      border-top: var(--border-width-regular, 1px) solid var(--color-border-secondary, #d0d0d0);
+      padding-top: 12px;
+    }
+
+    .zap-receipts-title {
+      font-size: var(--font-text-sm-size, 13px);
+      font-weight: var(--font-weight-semibold, 600);
+      color: var(--color-text-secondary, #666666);
+      margin-bottom: 8px;
+    }
+
+    .zap-receipt-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+      font-size: var(--font-text-xs-size, 12px);
+    }
+
+    .zap-receipt-amount {
+      font-weight: var(--font-weight-semibold, 600);
+      color: var(--color-text-warning, #cc8800);
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="loading">
+    <div class="loading-spinner"></div>
+  </div>
+
+  <script>
+    let rpcId = 0;
+    const pending = new Map();
+    let selectedAmount = 21;
+    let targetId = null;
+
+    function sendRpc(method, params) {
+      const id = ++rpcId;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+      });
+    }
+
+    function sendNotification(method, params) {
+      window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+    }
+
+    window.addEventListener("message", (event) => {
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== "2.0") return;
+
+      if (msg.id && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(msg.error);
+        else resolve(msg.result);
+        return;
+      }
+
+      if (msg.method === "ui/notifications/tool-result") {
+        handleToolResult(msg.params);
+      } else if (msg.method === "ui/notifications/tool-input") {
+        handleToolInput(msg.params);
+      } else if (msg.method === "ui/notifications/tool-cancelled") {
+        showResult("Operation cancelled", false);
+      } else if (msg.method === "ui/resource-teardown") {
+        window.parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+      }
+    });
+
+    async function init() {
+      try {
+        await sendRpc("ui/initialize", {
+          protocolVersion: "2026-01-26",
+          capabilities: {},
+          clientInfo: { name: "nostr-zap-button", version: "0.1.0" },
+          appCapabilities: { availableDisplayModes: ["inline"] }
+        });
+        sendNotification("ui/notifications/initialized", {});
+        renderZapUI();
+      } catch (e) {
+        console.error("Init failed:", e);
+      }
+    }
+
+    function handleToolInput(params) {
+      if (params.arguments?.target) {
+        targetId = params.arguments.target;
+      }
+    }
+
+    function handleToolResult(params) {
+      if (params.isError) {
+        showResult(params.content?.[0]?.text || "Zap failed", false);
+        return;
+      }
+      try {
+        const text = params.content?.[0]?.text || "{}";
+        const data = JSON.parse(text);
+        if (data.zap_receipts) {
+          renderReceipts(data);
+        } else if (data.success) {
+          showResult(`Zap sent! ${data.amount || ""} sats`, true);
+        }
+      } catch (e) {
+        showResult("Zap completed", true);
+      }
+    }
+
+    function renderZapUI() {
+      const app = document.getElementById("app");
+      app.className = "";
+      app.innerHTML = `<div class="zap-container">
+        <div class="zap-header">Send Zap</div>
+        <div class="zap-amount-grid">
+          <button class="zap-amount-btn selected" onclick="selectAmount(21)">21</button>
+          <button class="zap-amount-btn" onclick="selectAmount(100)">100</button>
+          <button class="zap-amount-btn" onclick="selectAmount(1000)">1K</button>
+          <button class="zap-amount-btn" onclick="selectAmount(5000)">5K</button>
+        </div>
+        <textarea class="zap-comment-input" id="zap-comment" placeholder="Comment (optional)" rows="2"></textarea>
+        <button class="zap-send-btn" id="zap-send" onclick="doZap()">Send ${selectedAmount} sats</button>
+        <div id="zap-result"></div>
+      </div>`;
+    }
+
+    function selectAmount(amount) {
+      selectedAmount = amount;
+      document.querySelectorAll(".zap-amount-btn").forEach(btn => {
+        btn.classList.toggle("selected", parseInt(btn.textContent.replace("K", "000")) === amount);
+      });
+      const sendBtn = document.getElementById("zap-send");
+      if (sendBtn) sendBtn.textContent = `Send ${amount} sats`;
+    }
+
+    async function doZap() {
+      const sendBtn = document.getElementById("zap-send");
+      sendBtn.disabled = true;
+      sendBtn.textContent = "Sending...";
+
+      const comment = document.getElementById("zap-comment")?.value || "";
+
+      try {
+        const result = await sendRpc("tools/call", {
+          name: "send_zap",
+          arguments: {
+            target: targetId || "",
+            amount: selectedAmount,
+            ...(comment ? { comment } : {})
+          }
+        });
+        showResult(`Zap sent! ${selectedAmount} sats`, true);
+      } catch (e) {
+        showResult(e.message || "Zap failed", false);
+      }
+
+      sendBtn.disabled = false;
+      sendBtn.textContent = `Send ${selectedAmount} sats`;
+    }
+
+    function showResult(msg, success) {
+      const el = document.getElementById("zap-result");
+      if (el) {
+        el.className = `zap-result ${success ? "success" : "error"}`;
+        el.textContent = msg;
+      }
+    }
+
+    function renderReceipts(data) {
+      const receipts = data.zap_receipts || [];
+      const totalSats = data.total_sats || 0;
+
+      let html = `<div class="zap-receipts">
+        <div class="zap-receipts-title">${receipts.length} Zaps (${totalSats} sats total)</div>`;
+
+      receipts.forEach(r => {
+        const sender = r.sender?.display || r.sender?.name || "Anonymous";
+        html += `<div class="zap-receipt-item">
+          <span class="zap-receipt-amount">${r.amount_sats} sats</span>
+          <span>${escapeHtml(sender)}</span>
+          ${r.comment ? `<span>- ${escapeHtml(r.comment)}</span>` : ""}
+        </div>`;
+      });
+
+      html += `</div>`;
+
+      const container = document.getElementById("zap-result") || document.getElementById("app");
+      container.innerHTML = html;
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    init();
+  </script>
+</body>
+</html>

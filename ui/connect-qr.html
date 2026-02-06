@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nostr Connect</title>
+  <style>
+    {{COMMON_CSS}}
+
+    .connect-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px;
+      text-align: center;
+    }
+
+    .connect-title {
+      font-size: var(--font-heading-sm-size, 18px);
+      font-weight: var(--font-weight-bold, 700);
+      margin-bottom: 8px;
+    }
+
+    .connect-description {
+      font-size: var(--font-text-sm-size, 13px);
+      color: var(--color-text-secondary, #666666);
+      margin-bottom: 20px;
+      max-width: 300px;
+    }
+
+    .qr-container {
+      padding: 16px;
+      background: #ffffff;
+      border-radius: var(--border-radius-lg, 12px);
+      box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.1));
+      margin-bottom: 16px;
+    }
+
+    .qr-container img {
+      width: 200px;
+      height: 200px;
+      image-rendering: pixelated;
+    }
+
+    .connect-uri {
+      font-family: var(--font-mono, monospace);
+      font-size: var(--font-text-xs-size, 11px);
+      color: var(--color-text-secondary, #666666);
+      background: var(--color-background-secondary, #f5f5f5);
+      padding: 8px 12px;
+      border-radius: var(--border-radius-md, 8px);
+      word-break: break-all;
+      max-width: 320px;
+      margin-bottom: 16px;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .connect-uri:hover::after {
+      content: "Click to copy";
+      position: absolute;
+      top: -24px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 11px;
+      color: var(--color-text-info, #0066cc);
+      white-space: nowrap;
+    }
+
+    .connect-status {
+      margin-top: 12px;
+    }
+
+    .connected-user {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      background: var(--color-background-success, #e8f5e9);
+      border-radius: var(--border-radius-md, 8px);
+      margin-top: 12px;
+    }
+
+    .connected-user-name {
+      font-weight: var(--font-weight-semibold, 600);
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="loading">
+    <div class="loading-spinner"></div>
+  </div>
+
+  <script>
+    let rpcId = 0;
+    const pending = new Map();
+
+    function sendRpc(method, params) {
+      const id = ++rpcId;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+      });
+    }
+
+    function sendNotification(method, params) {
+      window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+    }
+
+    window.addEventListener("message", (event) => {
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== "2.0") return;
+
+      if (msg.id && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(msg.error);
+        else resolve(msg.result);
+        return;
+      }
+
+      if (msg.method === "ui/notifications/tool-result") {
+        handleToolResult(msg.params);
+      } else if (msg.method === "ui/notifications/tool-input") {
+        handleToolInput(msg.params);
+      } else if (msg.method === "ui/notifications/tool-cancelled") {
+        showStatus("Cancelled", "error");
+      } else if (msg.method === "ui/resource-teardown") {
+        window.parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+      }
+    });
+
+    async function init() {
+      try {
+        await sendRpc("ui/initialize", {
+          protocolVersion: "2026-01-26",
+          capabilities: {},
+          clientInfo: { name: "nostr-connect-qr", version: "0.1.0" },
+          appCapabilities: { availableDisplayModes: ["inline"] }
+        });
+        sendNotification("ui/notifications/initialized", {});
+        renderWaiting();
+      } catch (e) {
+        console.error("Init failed:", e);
+      }
+    }
+
+    function handleToolInput(params) {
+      // May receive connection URI during streaming
+    }
+
+    function handleToolResult(params) {
+      if (params.isError) {
+        showStatus(params.content?.[0]?.text || "Connection failed", "error");
+        return;
+      }
+      try {
+        const text = params.content?.[0]?.text || "{}";
+        const data = JSON.parse(text);
+        if (data.qr_base64 && data.connect_uri) {
+          renderQR(data);
+        } else if (data.connected && data.user) {
+          renderConnected(data);
+        } else if (data.status) {
+          showStatus(data.message || data.status, data.status === "connected" ? "connected" : "waiting");
+        }
+      } catch (e) {
+        showStatus("Waiting for connection...", "waiting");
+      }
+    }
+
+    function renderWaiting() {
+      const app = document.getElementById("app");
+      app.className = "";
+      app.innerHTML = `<div class="connect-container">
+        <div class="connect-title">Nostr Connect (NIP-46)</div>
+        <div class="connect-description">Scan the QR code with your Nostr signer app (Primal, Amber, etc.) to connect securely.</div>
+        <div class="connect-status">
+          <span class="status-indicator">
+            <span class="status-dot waiting"></span>
+            Waiting for QR code...
+          </span>
+        </div>
+      </div>`;
+    }
+
+    function renderQR(data) {
+      const app = document.getElementById("app");
+      app.className = "";
+      app.innerHTML = `<div class="connect-container">
+        <div class="connect-title">Nostr Connect (NIP-46)</div>
+        <div class="connect-description">Scan with your Nostr signer app to log in.</div>
+        <div class="qr-container">
+          <img src="data:image/png;base64,${data.qr_base64}" alt="QR Code">
+        </div>
+        <div class="connect-uri" onclick="copyUri(this)" title="Click to copy">${escapeHtml(truncateUri(data.connect_uri))}</div>
+        <div class="connect-status">
+          <span class="status-indicator">
+            <span class="status-dot waiting"></span>
+            Waiting for connection...
+          </span>
+        </div>
+      </div>`;
+    }
+
+    function renderConnected(data) {
+      const user = data.user || {};
+      const app = document.getElementById("app");
+      app.className = "";
+      app.innerHTML = `<div class="connect-container">
+        <div class="connect-title">Connected!</div>
+        <div class="connect-status">
+          <span class="status-indicator">
+            <span class="status-dot connected"></span>
+            Connected via NIP-46
+          </span>
+        </div>
+        <div class="connected-user">
+          ${user.picture ? `<img class="author-avatar" src="${escapeAttr(user.picture)}" alt="">` : ""}
+          <div>
+            <div class="connected-user-name">${escapeHtml(user.display_name || user.name || "")}</div>
+            ${user.nip05 ? `<div class="author-nip05">@${escapeHtml(user.nip05)}</div>` : ""}
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function showStatus(msg, state) {
+      const statusEl = document.querySelector(".connect-status");
+      if (statusEl) {
+        statusEl.innerHTML = `<span class="status-indicator">
+          <span class="status-dot ${state}"></span>
+          ${escapeHtml(msg)}
+        </span>`;
+      }
+    }
+
+    function copyUri(el) {
+      if (navigator.clipboard && el.dataset.uri) {
+        navigator.clipboard.writeText(el.dataset.uri);
+        el.textContent = "Copied!";
+        setTimeout(() => { el.textContent = truncateUri(el.dataset.uri); }, 2000);
+      }
+    }
+
+    function truncateUri(uri) {
+      if (uri && uri.length > 80) return uri.slice(0, 40) + "..." + uri.slice(-37);
+      return uri || "";
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function escapeAttr(str) {
+      return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    init();
+  </script>
+</body>
+</html>

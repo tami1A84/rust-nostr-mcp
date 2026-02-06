@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nostr Profile</title>
+  <style>
+    {{COMMON_CSS}}
+
+    .profile-container {
+      position: relative;
+    }
+
+    .profile-body {
+      padding: 0 16px 16px;
+    }
+
+    .profile-name-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .profile-display-name {
+      font-size: var(--font-heading-sm-size, 18px);
+      font-weight: var(--font-weight-bold, 700);
+    }
+
+    .profile-nip05-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: var(--font-text-xs-size, 12px);
+      color: var(--color-text-info, #0066cc);
+    }
+
+    .profile-bio {
+      margin-top: 8px;
+      font-size: var(--font-text-sm-size, 13px);
+      line-height: var(--font-text-sm-line-height, 1.5);
+      color: var(--color-text-primary, #1a1a1a);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .profile-links {
+      margin-top: 8px;
+      font-size: var(--font-text-xs-size, 12px);
+    }
+
+    .profile-links a {
+      color: var(--color-text-info, #0066cc);
+      text-decoration: none;
+    }
+
+    .profile-links a:hover {
+      text-decoration: underline;
+    }
+
+    .profile-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="loading">
+    <div class="loading-spinner"></div>
+  </div>
+
+  <script>
+    let rpcId = 0;
+    const pending = new Map();
+
+    function sendRpc(method, params) {
+      const id = ++rpcId;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+      });
+    }
+
+    function sendNotification(method, params) {
+      window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+    }
+
+    window.addEventListener("message", (event) => {
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== "2.0") return;
+
+      if (msg.id && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(msg.error);
+        else resolve(msg.result);
+        return;
+      }
+
+      if (msg.method === "ui/notifications/tool-result") {
+        handleToolResult(msg.params);
+      } else if (msg.method === "ui/notifications/tool-cancelled") {
+        showError("Operation cancelled");
+      } else if (msg.method === "ui/resource-teardown") {
+        window.parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+      }
+    });
+
+    async function init() {
+      try {
+        await sendRpc("ui/initialize", {
+          protocolVersion: "2026-01-26",
+          capabilities: {},
+          clientInfo: { name: "nostr-profile-card", version: "0.1.0" },
+          appCapabilities: { availableDisplayModes: ["inline"] }
+        });
+        sendNotification("ui/notifications/initialized", {});
+      } catch (e) {
+        console.error("Init failed:", e);
+      }
+    }
+
+    function handleToolResult(params) {
+      if (params.isError) {
+        showError(params.content?.[0]?.text || "Unknown error");
+        return;
+      }
+      try {
+        const text = params.content?.[0]?.text || "{}";
+        const data = JSON.parse(text);
+        renderProfile(data);
+      } catch (e) {
+        showError("Failed to parse result");
+      }
+    }
+
+    function renderProfile(data) {
+      const profile = data.profile || {};
+      const card = data.profile_card || {};
+      const stats = card.stats || {};
+
+      const displayName = card.name || profile.display_name || profile.name || shortKey(profile.npub || "");
+      const avatar = card.avatar || profile.picture || "";
+      const banner = profile.banner || "";
+      const nip05 = card.nip05 || profile.nip05 || "";
+      const bio = card.bio || profile.about || "";
+      const website = profile.website || "";
+      const lud16 = profile.lud16 || "";
+
+      const app = document.getElementById("app");
+      app.className = "";
+      app.innerHTML = `<div class="card profile-container">
+        ${banner ? `<img class="profile-banner" src="${escapeAttr(banner)}" alt="">` : `<div class="profile-banner"></div>`}
+        <div class="profile-body">
+          ${avatar ? `<img class="profile-avatar-large" src="${escapeAttr(avatar)}" alt="">` : `<div class="profile-avatar-large"></div>`}
+          <div class="profile-name-row">
+            <span class="profile-display-name">${escapeHtml(displayName)}</span>
+            ${nip05 ? `<span class="profile-nip05-badge">@${escapeHtml(nip05)}</span>` : ""}
+          </div>
+          ${bio ? `<div class="profile-bio">${escapeHtml(bio)}</div>` : ""}
+          ${website || lud16 ? `<div class="profile-links">
+            ${website ? `<div>${escapeHtml(website)}</div>` : ""}
+            ${lud16 ? `<div>${escapeHtml(lud16)}</div>` : ""}
+          </div>` : ""}
+          <div class="profile-stats">
+            <div class="profile-stat">
+              <span class="profile-stat-value">${stats.following ?? "-"}</span>
+              <span class="profile-stat-label">Following</span>
+            </div>
+            <div class="profile-stat">
+              <span class="profile-stat-value">${stats.followers ?? "-"}</span>
+              <span class="profile-stat-label">Followers</span>
+            </div>
+            <div class="profile-stat">
+              <span class="profile-stat-value">${stats.notes ?? "-"}</span>
+              <span class="profile-stat-label">Notes</span>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function showError(msg) {
+      const app = document.getElementById("app");
+      app.className = "";
+      app.innerHTML = `<div class="error">${escapeHtml(msg)}</div>`;
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function escapeAttr(str) {
+      return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function shortKey(npub) {
+      if (!npub || npub.length < 16) return npub || "";
+      return npub.slice(0, 12) + "..." + npub.slice(-4);
+    }
+
+    init();
+  </script>
+</body>
+</html>

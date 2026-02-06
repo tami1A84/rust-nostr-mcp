@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nostr Article</title>
+  <style>
+    {{COMMON_CSS}}
+
+    .article-header-image {
+      width: 100%;
+      max-height: 200px;
+      object-fit: cover;
+    }
+
+    .article-title {
+      font-size: var(--font-heading-sm-size, 18px);
+      font-weight: var(--font-weight-bold, 700);
+      line-height: var(--font-heading-sm-line-height, 1.3);
+      color: var(--color-text-primary, #1a1a1a);
+      margin-bottom: 4px;
+    }
+
+    .article-summary {
+      font-size: var(--font-text-sm-size, 13px);
+      color: var(--color-text-secondary, #666666);
+      margin-bottom: 12px;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .article-content {
+      font-size: var(--font-text-md-size, 14px);
+      line-height: var(--font-text-md-line-height, 1.7);
+      color: var(--color-text-primary, #1a1a1a);
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .article-content h1, .article-content h2, .article-content h3 {
+      margin: 16px 0 8px;
+      font-weight: var(--font-weight-semibold, 600);
+    }
+
+    .article-content h1 { font-size: var(--font-heading-sm-size, 18px); }
+    .article-content h2 { font-size: var(--font-heading-xs-size, 16px); }
+    .article-content h3 { font-size: var(--font-text-lg-size, 15px); }
+
+    .article-content p { margin: 8px 0; }
+
+    .article-content code {
+      font-family: var(--font-mono, monospace);
+      background: var(--color-background-secondary, #f5f5f5);
+      padding: 1px 4px;
+      border-radius: var(--border-radius-xs, 2px);
+      font-size: 0.9em;
+    }
+
+    .article-content pre {
+      background: var(--color-background-secondary, #f5f5f5);
+      padding: 12px;
+      border-radius: var(--border-radius-md, 8px);
+      overflow-x: auto;
+      margin: 8px 0;
+    }
+
+    .article-content pre code {
+      background: none;
+      padding: 0;
+    }
+
+    .article-content img {
+      max-width: 100%;
+      border-radius: var(--border-radius-md, 8px);
+    }
+
+    .article-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: var(--font-text-xs-size, 12px);
+      color: var(--color-text-secondary, #666666);
+      margin-bottom: 12px;
+    }
+
+    .article-draft-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      background: var(--color-background-warning, #fff8e0);
+      color: var(--color-text-warning, #cc8800);
+      border-radius: var(--border-radius-sm, 4px);
+      font-size: var(--font-text-xs-size, 12px);
+      font-weight: var(--font-weight-semibold, 600);
+    }
+
+    .article-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="loading">
+    <div class="loading-spinner"></div>
+  </div>
+
+  <script>
+    let rpcId = 0;
+    const pending = new Map();
+
+    function sendRpc(method, params) {
+      const id = ++rpcId;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+      });
+    }
+
+    function sendNotification(method, params) {
+      window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+    }
+
+    window.addEventListener("message", (event) => {
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== "2.0") return;
+
+      if (msg.id && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(msg.error);
+        else resolve(msg.result);
+        return;
+      }
+
+      if (msg.method === "ui/notifications/tool-result") {
+        handleToolResult(msg.params);
+      } else if (msg.method === "ui/notifications/tool-input") {
+        // input received
+      } else if (msg.method === "ui/notifications/tool-cancelled") {
+        showError("Operation cancelled");
+      } else if (msg.method === "ui/resource-teardown") {
+        window.parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+      }
+    });
+
+    async function init() {
+      try {
+        await sendRpc("ui/initialize", {
+          protocolVersion: "2026-01-26",
+          capabilities: {},
+          clientInfo: { name: "nostr-article-card", version: "0.1.0" },
+          appCapabilities: { availableDisplayModes: ["inline"] }
+        });
+        sendNotification("ui/notifications/initialized", {});
+      } catch (e) {
+        console.error("Init failed:", e);
+      }
+    }
+
+    function handleToolResult(params) {
+      if (params.isError) {
+        showError(params.content?.[0]?.text || "Unknown error");
+        return;
+      }
+      try {
+        const text = params.content?.[0]?.text || "{}";
+        const data = JSON.parse(text);
+        if (data.articles) {
+          renderArticles(data.articles);
+        } else if (data.drafts) {
+          renderArticles(data.drafts);
+        } else {
+          renderArticles([data]);
+        }
+      } catch (e) {
+        showError("Failed to parse result");
+      }
+    }
+
+    function renderArticles(articles) {
+      const app = document.getElementById("app");
+      app.className = "";
+      app.innerHTML = articles.map(renderSingleArticle).join("");
+    }
+
+    function renderSingleArticle(article) {
+      const author = article.author || {};
+      const displayName = author.display || author.display_name || author.name || "";
+      const avatar = author.picture || "";
+      const time = article.formatted_time || "";
+      const title = escapeHtml(article.title || "Untitled");
+      const summary = escapeHtml(article.summary || "");
+      const content = escapeHtml(article.content || "");
+      const isDraft = article.is_draft || false;
+      const headerImage = article.image || "";
+      const tags = article.tags || [];
+
+      const hashtags = article.parsed_content?.hashtags || [];
+      const allTags = [...new Set([...tags, ...hashtags])];
+
+      let tagsHtml = "";
+      if (allTags.length > 0) {
+        tagsHtml = `<div class="tag-list">${allTags.map(t => `<span class="tag">#${escapeHtml(t)}</span>`).join("")}</div>`;
+      }
+
+      return `<div class="card">
+        ${headerImage ? `<img class="article-header-image" src="${escapeAttr(headerImage)}" alt="" loading="lazy">` : ""}
+        <div class="card-body">
+          <div class="author-header">
+            ${avatar ? `<img class="author-avatar" src="${escapeAttr(avatar)}" alt="">` : `<div class="author-avatar"></div>`}
+            <div class="author-info">
+              <span class="author-name">${escapeHtml(displayName)}</span>
+              <span class="author-nip05">${escapeHtml(time)}</span>
+            </div>
+          </div>
+          ${isDraft ? `<span class="article-draft-badge">Draft</span>` : ""}
+          <div class="article-title">${title}</div>
+          ${summary ? `<div class="article-summary">${summary}</div>` : ""}
+          <div class="article-content">${content}</div>
+          ${tagsHtml}
+        </div>
+      </div>`;
+    }
+
+    function showError(msg) {
+      const app = document.getElementById("app");
+      app.className = "";
+      app.innerHTML = `<div class="error">${escapeHtml(msg)}</div>`;
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function escapeAttr(str) {
+      return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    init();
+  </script>
+</body>
+</html>
