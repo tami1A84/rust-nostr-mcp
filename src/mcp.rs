@@ -1,7 +1,7 @@
-//! MCP Server Module
+//! MCP サーバーモジュール
 //!
-//! Implements the Model Context Protocol (MCP) server using JSON-RPC over stdio.
-//! This allows AI agents like Claude to communicate with the Nostr network.
+//! JSON-RPC over stdio を使用した Model Context Protocol (MCP) サーバーの実装です。
+//! Claude などの AI エージェントが Nostr ネットワークと通信できるようにします。
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -13,14 +13,14 @@ use tracing::{debug, error, info};
 use crate::nostr_client::{NostrClient, NostrClientConfig};
 use crate::tools::{get_tool_definitions, ToolExecutor};
 
-/// MCP Protocol version.
+/// MCP プロトコルバージョン
 const MCP_VERSION: &str = "2024-11-05";
 
-/// Server information.
+/// サーバー情報
 const SERVER_NAME: &str = "nostr-mcp-server";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// JSON-RPC request structure.
+/// JSON-RPC リクエスト構造体
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
     jsonrpc: String,
@@ -30,7 +30,7 @@ struct JsonRpcRequest {
     params: Value,
 }
 
-/// JSON-RPC response structure.
+/// JSON-RPC レスポンス構造体
 #[derive(Debug, Serialize)]
 struct JsonRpcResponse {
     jsonrpc: String,
@@ -41,7 +41,7 @@ struct JsonRpcResponse {
     error: Option<JsonRpcError>,
 }
 
-/// JSON-RPC error structure.
+/// JSON-RPC エラー構造体
 #[derive(Debug, Serialize)]
 struct JsonRpcError {
     code: i32,
@@ -74,24 +74,18 @@ impl JsonRpcResponse {
     }
 }
 
-/// MCP Server implementation.
+/// MCP サーバーの実装
 pub struct McpServer {
-    /// The Nostr client
+    /// Nostr クライアント
     client: Arc<NostrClient>,
-    /// Tool executor
+    /// ツールエグゼキュータ
     tool_executor: ToolExecutor,
-    /// Whether the server has been initialized
+    /// サーバーが初期化済みかどうか
     initialized: bool,
 }
 
 impl McpServer {
-    /// Creates a new MCP server with the given configuration.
-    ///
-    /// # Arguments
-    /// * `config` - The Nostr client configuration
-    ///
-    /// # Returns
-    /// A new `McpServer` instance.
+    /// 指定された設定で新しい MCP サーバーを作成します。
     pub async fn new(config: NostrClientConfig) -> Result<Self> {
         let client = Arc::new(NostrClient::new(config).await?);
         let tool_executor = ToolExecutor::new(Arc::clone(&client));
@@ -103,18 +97,18 @@ impl McpServer {
         })
     }
 
-    /// Runs the MCP server, processing requests from stdin and writing responses to stdout.
+    /// MCP サーバーを実行し、stdin からリクエストを処理して stdout にレスポンスを書き込みます。
     pub async fn run(mut self) -> Result<()> {
         let stdin = std::io::stdin();
         let mut stdout = std::io::stdout();
 
-        info!("MCP server ready, waiting for requests...");
+        info!("MCP サーバー準備完了。リクエストを待機中...");
 
         for line in stdin.lock().lines() {
             let line = match line {
                 Ok(l) => l,
                 Err(e) => {
-                    error!("Error reading from stdin: {}", e);
+                    error!("stdin からの読み取りエラー: {}", e);
                     break;
                 }
             };
@@ -123,59 +117,57 @@ impl McpServer {
                 continue;
             }
 
-            debug!("Received request: {}", line);
+            debug!("リクエスト受信: {}", line);
 
             let response = self.handle_request(&line).await;
 
             if let Some(response) = response {
                 let response_str = serde_json::to_string(&response)
-                    .context("Failed to serialize response")?;
+                    .context("レスポンスのシリアライズに失敗しました")?;
 
-                debug!("Sending response: {}", response_str);
+                debug!("レスポンス送信: {}", response_str);
 
                 writeln!(stdout, "{}", response_str)?;
                 stdout.flush()?;
             }
         }
 
-        // Cleanup
+        // クリーンアップ
         self.client.disconnect().await;
-        info!("MCP server shutting down");
+        info!("MCP サーバーをシャットダウンします");
 
         Ok(())
     }
 
-    /// Handles a single JSON-RPC request.
+    /// 単一の JSON-RPC リクエストを処理します。
     async fn handle_request(&mut self, request_str: &str) -> Option<JsonRpcResponse> {
         let request: JsonRpcRequest = match serde_json::from_str(request_str) {
             Ok(r) => r,
             Err(e) => {
-                error!("Failed to parse request: {}", e);
+                error!("リクエストのパースに失敗: {}", e);
                 return Some(JsonRpcResponse::error(
                     Value::Null,
                     -32700,
-                    format!("Parse error: {}", e),
+                    format!("パースエラー: {}", e),
                 ));
             }
         };
 
         let id = request.id.clone().unwrap_or(Value::Null);
 
-        // Check JSON-RPC version
         if request.jsonrpc != "2.0" {
             return Some(JsonRpcResponse::error(
                 id,
                 -32600,
-                "Invalid JSON-RPC version".to_string(),
+                "無効な JSON-RPC バージョンです".to_string(),
             ));
         }
 
-        // Handle the request based on method
         let result = self.dispatch_method(&request.method, request.params).await;
 
         match result {
             Ok(value) => {
-                // Notifications (no id) don't get responses
+                // 通知（id なし）にはレスポンスを返さない
                 if request.id.is_none() {
                     None
                 } else {
@@ -186,37 +178,37 @@ impl McpServer {
         }
     }
 
-    /// Dispatches a method call to the appropriate handler.
+    /// メソッド呼び出しを適切なハンドラにディスパッチします。
     async fn dispatch_method(&mut self, method: &str, params: Value) -> Result<Value> {
         match method {
-            // Core MCP methods
+            // コア MCP メソッド
             "initialize" => self.handle_initialize(params),
             "initialized" | "notifications/initialized" => self.handle_initialized(),
 
-            // Tools
+            // ツール
             "tools/list" => self.handle_tools_list(),
             "tools/call" => self.handle_tools_call(params).await,
 
-            // Resources (empty but required for some clients)
+            // リソース（一部クライアントで必要）
             "resources/list" => self.handle_resources_list(),
             "resources/templates/list" => self.handle_resources_templates_list(),
 
-            // Prompts (empty but required for some clients)
+            // プロンプト（一部クライアントで必要）
             "prompts/list" => self.handle_prompts_list(),
 
-            // Utility
+            // ユーティリティ
             "ping" => Ok(json!({})),
 
             _ => {
-                info!("Unknown method requested: {}", method);
-                Err(anyhow::anyhow!("Method not found: {}", method))
+                info!("不明なメソッドが要求されました: {}", method);
+                Err(anyhow::anyhow!("メソッドが見つかりません: {}", method))
             }
         }
     }
 
-    /// Handles the initialize request.
+    /// initialize リクエストを処理
     fn handle_initialize(&mut self, _params: Value) -> Result<Value> {
-        info!("Handling initialize request");
+        info!("initialize リクエストを処理中");
 
         self.initialized = true;
 
@@ -234,15 +226,15 @@ impl McpServer {
         }))
     }
 
-    /// Handles the initialized notification.
+    /// initialized 通知を処理
     fn handle_initialized(&self) -> Result<Value> {
-        info!("Client initialized");
+        info!("クライアントが初期化されました");
         Ok(json!({}))
     }
 
-    /// Handles the tools/list request.
+    /// tools/list リクエストを処理
     fn handle_tools_list(&self) -> Result<Value> {
-        info!("Handling tools/list request");
+        info!("tools/list リクエストを処理中");
 
         let tools = get_tool_definitions();
 
@@ -251,50 +243,46 @@ impl McpServer {
         }))
     }
 
-    /// Handles the resources/list request.
-    /// Returns an empty list as this server doesn't provide resources.
+    /// resources/list リクエストを処理（空のリストを返す）
     fn handle_resources_list(&self) -> Result<Value> {
-        debug!("Handling resources/list request");
+        debug!("resources/list リクエストを処理中");
         Ok(json!({
             "resources": []
         }))
     }
 
-    /// Handles the resources/templates/list request.
-    /// Returns an empty list as this server doesn't provide resource templates.
+    /// resources/templates/list リクエストを処理（空のリストを返す）
     fn handle_resources_templates_list(&self) -> Result<Value> {
-        debug!("Handling resources/templates/list request");
+        debug!("resources/templates/list リクエストを処理中");
         Ok(json!({
             "resourceTemplates": []
         }))
     }
 
-    /// Handles the prompts/list request.
-    /// Returns an empty list as this server doesn't provide prompts.
+    /// prompts/list リクエストを処理（空のリストを返す）
     fn handle_prompts_list(&self) -> Result<Value> {
-        debug!("Handling prompts/list request");
+        debug!("prompts/list リクエストを処理中");
         Ok(json!({
             "prompts": []
         }))
     }
 
-    /// Handles the tools/call request.
+    /// tools/call リクエストを処理
     async fn handle_tools_call(&self, params: Value) -> Result<Value> {
         let name = params
             .get("name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?;
+            .ok_or_else(|| anyhow::anyhow!("ツール名が指定されていません"))?;
 
         let arguments = params
             .get("arguments")
             .cloned()
             .unwrap_or(json!({}));
 
-        info!("Handling tools/call request for tool: {}", name);
+        info!("tools/call リクエストを処理中。ツール: {}", name);
 
         match self.tool_executor.execute(name, arguments).await {
             Ok(result) => {
-                // Format the result as MCP tool response
                 Ok(json!({
                     "content": [
                         {
@@ -305,12 +293,12 @@ impl McpServer {
                 }))
             }
             Err(e) => {
-                error!("Tool execution error: {}", e);
+                error!("ツール実行エラー: {}", e);
                 Ok(json!({
                     "content": [
                         {
                             "type": "text",
-                            "text": format!("Error: {}", e)
+                            "text": format!("エラー: {}", e)
                         }
                     ],
                     "isError": true

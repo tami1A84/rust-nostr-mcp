@@ -1,148 +1,114 @@
-# Nostr MCP Server - Development Plan
+# Nostr MCP サーバー - 開発計画
 
-## Overview
+## 概要
 
-This is a Model Context Protocol (MCP) server that enables AI agents to interact with the Nostr network. The server follows security best practices by storing private keys locally and never passing them to AI agents.
+これは Model Context Protocol (MCP) サーバーで、AI エージェントが Nostr ネットワークと対話できるようにします。秘密鍵をローカルに保存し、AI エージェントには渡さないセキュリティベストプラクティスに従っています。
 
-## Current Features (v0.2.0)
+## 現在の機能 (v0.2.0)
 
-### Security
-- **Secure Key Management**: Private keys stored in `~/.config/rust-nostr-mcp/config.json`
-- **Algia-compatible Configuration**: Following the same config format as algia CLI
-- **Read-only Mode**: Server operates safely without private key configured
+### セキュリティ
+- **安全な鍵管理**: 秘密鍵を `~/.config/rust-nostr-mcp/config.json` に保存
+- **algia 互換設定**: algia CLI と同じ設定形式に準拠
+- **読み取り専用モード**: 秘密鍵なしでも安全に動作
 
-### Tools
-- `post_nostr_note` - Post short text notes (Kind 1)
-- `get_nostr_timeline` - Get timeline with author information
-- `search_nostr_notes` - Search notes using NIP-50
-- `get_nostr_profile` - Get user profile information
+### ツール（既存）
+- `post_nostr_note` - ショートテキストノート (Kind 1) を投稿
+- `get_nostr_timeline` - 著者情報付きタイムラインを取得
+- `search_nostr_notes` - NIP-50 を使用してノートを検索
+- `get_nostr_profile` - ユーザープロフィール情報を取得
 
-### Modern Display Format
-- Author information included (name, display_name, picture, nip05)
-- Relative timestamps (e.g., "5m ago", "2h ago")
-- nevent links for easy reference
+### ツール（Phase 1: NIP-23 長文コンテンツ）
+- `post_nostr_article` - 長文記事 (Kind 30023) を投稿
+- `get_nostr_articles` - 長文記事を取得（著者・タグでフィルタ可能）
+- `save_nostr_draft` - 記事を下書き (Kind 30024) として保存
+- `get_nostr_drafts` - ユーザーの下書き記事を取得
 
----
-
-## Future Plans
-
-### Phase 1: NIP-23 Long-form Content Support
-
-#### Goals
-Support for long-form articles (Kind 30023/30024) as defined in [NIP-23](https://github.com/nostr-protocol/nips/blob/master/23.md).
-
-#### New Tools to Implement
-
-```
-post_nostr_article
-- Post a long-form article (Kind 30023)
-- Parameters:
-  - title (string, required): Article title
-  - content (string, required): Markdown content
-  - summary (string, optional): Brief description
-  - image (string, optional): Header image URL
-  - tags (array, optional): Topic hashtags
-  - published_at (number, optional): Unix timestamp
-
-get_nostr_articles
-- Fetch long-form articles
-- Parameters:
-  - author (string, optional): Filter by author pubkey
-  - tags (array, optional): Filter by hashtags
-  - limit (number, optional): Max results
-
-save_nostr_draft
-- Save article as draft (Kind 30024)
-- Same parameters as post_nostr_article
-
-get_nostr_drafts
-- Get user's draft articles
-```
-
-#### Technical Implementation
-- Add Kind 30023 and 30024 support to nostr_client.rs
-- Parse and validate Markdown content
-- Handle addressable events with `d` tag
-- Support `naddr` encoding for article references
+### モダンな表示形式
+- 著者情報を含む（name、display_name、picture、nip05）
+- 相対タイムスタンプ（例: 「5分前」「2時間前」）
+- nevent リンクでの簡単な参照
+- naddr エンコーディング対応（長文記事用）
 
 ---
 
-### Phase 2: Enhanced Timeline Features
+## 今後の計画
 
-#### Goals
-Improve the timeline experience with reactions, replies, and threading.
+### Phase 2: タイムライン拡張機能
 
-#### New Tools
+#### 目標
+リアクション、リプライ、スレッディングによるタイムライン体験の向上。
+
+#### 新規ツール
 
 ```
 get_nostr_thread
-- Get a note with its replies in threaded format
-- Parameters:
-  - note_id (string, required): Event ID or nevent
-  - depth (number, optional): Reply depth to fetch
+- スレッド形式でノートとリプライを取得
+- パラメータ:
+  - note_id (string, 必須): イベント ID または nevent
+  - depth (number, 任意): 取得するリプライの深さ
 
 react_to_note
-- Add a reaction to a note (Kind 7)
-- Parameters:
-  - note_id (string, required): Target event ID
-  - reaction (string, optional): Reaction emoji (default: "+")
+- ノートにリアクション (Kind 7) を追加
+- パラメータ:
+  - note_id (string, 必須): 対象イベント ID
+  - reaction (string, 任意): リアクション絵文字（デフォルト: "+"）
 
 reply_to_note
-- Post a reply to an existing note
-- Parameters:
-  - note_id (string, required): Parent event ID
-  - content (string, required): Reply content
+- 既存のノートに返信を投稿
+- パラメータ:
+  - note_id (string, 必須): 親イベント ID
+  - content (string, 必須): 返信内容
 
 get_nostr_notifications
-- Get mentions and reactions to user's notes
-- Parameters:
-  - since (number, optional): Unix timestamp
-  - limit (number, optional): Max results
+- ユーザーのノートへのメンションとリアクションを取得
+- パラメータ:
+  - since (number, 任意): Unix タイムスタンプ
+  - limit (number, 任意): 最大結果数
 ```
 
-#### Technical Implementation
-- Fetch reaction counts (Kind 7) for timeline notes
-- Implement reply threading with proper `e` and `p` tags
-- Add NIP-10 marker support for threading
+#### 技術的な実装
+- タイムラインのノートに対するリアクション数 (Kind 7) を取得
+- `e` タグと `p` タグを使用した適切なリプライスレッディング
+- NIP-10 マーカーサポートによるスレッディング
 
 ---
 
-### Phase 3: Modern UI/UX Enhancements
+### Phase 3: UI/UX の改善
 
-#### Goals
-Make the output more AI-friendly and visually structured.
+#### 目標
+出力を AI フレンドリーかつ視覚的に構造化。
 
-#### Improvements
+#### 改善項目
 
-1. **Structured Note Display**
+1. **構造化ノート表示**
    ```json
    {
      "display_card": {
-       "header": "👤 Username (@nip05)",
-       "content": "Note content here...",
-       "footer": "⚡ 42 reactions · 💬 5 replies · 2h ago"
+       "header": "ユーザー名 (@nip05)",
+       "content": "ノートの内容...",
+       "footer": "42 リアクション · 5 リプライ · 2時間前"
      }
    }
    ```
 
-2. **Rich Media Support**
-   - Parse image URLs from content
-   - Detect video/audio links
-   - Support nostr:// references
+2. **リッチメディアサポート**
+   - コンテンツから画像 URL を検出
+   - 動画/音声リンクの検出
+   - nostr:// 参照のサポート
 
-3. **Content Formatting**
-   - Parse hashtags and mentions
-   - Highlight quoted notes (NIP-27)
-   - Format code blocks in long-form content
+3. **コンテンツフォーマット**
+   - ハッシュタグとメンションのパース
+   - 引用ノートのハイライト (NIP-27)
+   - 長文コンテンツでのコードブロックフォーマット
 
-4. **Profile Cards**
+4. **プロフィールカード**
    ```json
    {
      "profile_card": {
        "avatar": "picture_url",
-       "name": "Display Name",
+       "name": "表示名",
        "nip05": "user@domain.com",
-       "bio": "About text...",
+       "bio": "自己紹介文...",
        "stats": {
          "following": 150,
          "followers": 500,
@@ -154,73 +120,73 @@ Make the output more AI-friendly and visually structured.
 
 ---
 
-### Phase 4: Advanced Features
+### Phase 4: 高度な機能
 
-#### NIP Support Roadmap
+#### NIP サポートロードマップ
 
-| NIP | Description | Priority |
-|-----|-------------|----------|
-| NIP-01 | Basic protocol | ✅ Done |
-| NIP-02 | Contact List | ✅ Done |
-| NIP-05 | DNS Verification | ✅ Done |
-| NIP-10 | Reply Threading | 🔜 Phase 2 |
-| NIP-19 | bech32 Encoding | ✅ Done |
-| NIP-23 | Long-form Content | 🔜 Phase 1 |
-| NIP-25 | Reactions | 🔜 Phase 2 |
-| NIP-27 | nostr: References | 🔜 Phase 3 |
-| NIP-50 | Search | ✅ Done |
-| NIP-57 | Zaps | 📋 Phase 4 |
-| NIP-65 | Relay List | 📋 Phase 4 |
+| NIP | 説明 | 優先度 |
+|-----|------|--------|
+| NIP-01 | 基本プロトコル | 実装済み |
+| NIP-02 | コンタクトリスト | 実装済み |
+| NIP-05 | DNS 検証 | 実装済み |
+| NIP-10 | リプライスレッディング | Phase 2 |
+| NIP-19 | bech32 エンコーディング | 実装済み |
+| NIP-23 | 長文コンテンツ | 実装済み |
+| NIP-25 | リアクション | Phase 2 |
+| NIP-27 | nostr: 参照 | Phase 3 |
+| NIP-50 | 検索 | 実装済み |
+| NIP-57 | Zaps | Phase 4 |
+| NIP-65 | リレーリスト | Phase 4 |
 
-#### Zap Support (NIP-57)
+#### Zap サポート (NIP-57)
 ```
 send_zap
-- Send a Lightning zap to a note or profile
-- Parameters:
-  - target (string, required): Event ID or pubkey
-  - amount (number, required): Amount in sats
-  - comment (string, optional): Zap comment
+- ノートまたはプロフィールに Lightning Zap を送信
+- パラメータ:
+  - target (string, 必須): イベント ID または pubkey
+  - amount (number, 必須): sats 単位の金額
+  - comment (string, 任意): Zap コメント
 
 get_zap_receipts
-- Get zap receipts for a note
-- Parameters:
-  - note_id (string, required): Event ID
+- ノートの Zap レシートを取得
+- パラメータ:
+  - note_id (string, 必須): イベント ID
 ```
 
-#### Direct Messages (NIP-04/NIP-17)
+#### ダイレクトメッセージ (NIP-04/NIP-17)
 ```
 send_dm
-- Send encrypted direct message
-- Parameters:
-  - recipient (string, required): Recipient pubkey
-  - content (string, required): Message content
+- 暗号化されたダイレクトメッセージを送信
+- パラメータ:
+  - recipient (string, 必須): 受信者の pubkey
+  - content (string, 必須): メッセージ内容
 
 get_dms
-- Get direct message conversations
-- Parameters:
-  - with (string, optional): Filter by conversation partner
-  - limit (number, optional): Max messages
+- ダイレクトメッセージの会話を取得
+- パラメータ:
+  - with (string, 任意): 会話相手でフィルタ
+  - limit (number, 任意): 最大メッセージ数
 ```
 
 ---
 
-## Use Cases
+## ユースケース
 
-以下は、rust-nostr-mcpをMCPクライアント（Claude Desktop、Goose、mcp-appなど）と組み合わせて活用するユースケースの提案です。
+以下は、rust-nostr-mcp を MCP クライアント（Claude Desktop、Goose、mcp-app など）と組み合わせて活用するユースケースの提案です。
 
-### 1. NIP-23 長文コンテンツのプレビューと要約（Phase 1連携）
+### 1. NIP-23 長文コンテンツのプレビューと要約
 
-MCPクライアント上でNostrの長文記事（Kind 30023）を取得し、AIがリアルタイムにプレビュー・要約を生成するワークフロー。
+MCP クライアント上で Nostr の長文記事（Kind 30023）を取得し、AI がリアルタイムにプレビュー・要約を生成するワークフロー。
 
 **シナリオ例:**
 ```
-ユーザー: 「Bitcoinに関する最新のNostr記事を探して要約して」
+ユーザー: 「Bitcoin に関する最新の Nostr 記事を探して要約して」
 
 AI Agent:
 1. search_nostr_notes で "bitcoin" を検索
-2. get_nostr_articles で長文記事を取得（Phase 1実装後）
-3. Markdown記事をパースし、要約を生成
-4. mcp-app上で記事のプレビューカード表示
+2. get_nostr_articles で長文記事を取得
+3. Markdown 記事をパースし、要約を生成
+4. mcp-app 上で記事のプレビューカード表示
 ```
 
 **活用場面:**
@@ -230,13 +196,13 @@ AI Agent:
 
 ---
 
-### 2. AIアシスタントによるNostr投稿ワークフロー
+### 2. AI アシスタントによる Nostr 投稿ワークフロー
 
-AIがユーザーの意図を理解し、適切な形式でNostrに投稿する対話型ワークフロー。
+AI がユーザーの意図を理解し、適切な形式で Nostr に投稿する対話型ワークフロー。
 
 **シナリオ例:**
 ```
-ユーザー: 「今日のRust勉強会の内容をNostrに投稿したい」
+ユーザー: 「今日の Rust 勉強会の内容を Nostr に投稿したい」
 
 AI Agent:
 1. ユーザーとの対話でメモや要点を整理
@@ -252,19 +218,19 @@ AI Agent:
 
 ---
 
-### 3. Nostrタイムラインの定期サマリー
+### 3. Nostr タイムラインの定期サマリー
 
-タイムラインを取得してAIが要約し、重要な話題をハイライトするダイジェスト生成。
+タイムラインを取得して AI が要約し、重要な話題をハイライトするダイジェスト生成。
 
 **シナリオ例:**
 ```
-ユーザー: 「今日のNostrタイムラインで話題になっていることを教えて」
+ユーザー: 「今日の Nostr タイムラインで話題になっていることを教えて」
 
 AI Agent:
 1. get_nostr_timeline で最新ノートを取得
 2. トピック別に分類（技術、ニュース、コミュニティなど）
 3. 主要な議論やトレンドを要約
-4. 注目すべきノートのneventリンクを提示
+4. 注目すべきノートの nevent リンクを提示
 ```
 
 **活用場面:**
@@ -276,11 +242,11 @@ AI Agent:
 
 ### 4. プロフィール分析とネットワーク調査
 
-`get_nostr_profile` を活用し、Nostrユーザーの情報を収集・分析するユースケース。
+`get_nostr_profile` を活用し、Nostr ユーザーの情報を収集・分析するユースケース。
 
 **シナリオ例:**
 ```
-ユーザー: 「このnpubのユーザーについて教えて」
+ユーザー: 「この npub のユーザーについて教えて」
 
 AI Agent:
 1. get_nostr_profile でプロフィール情報を取得
@@ -292,17 +258,17 @@ AI Agent:
 **活用場面:**
 - 新しくフォローする相手の事前調査
 - コミュニティ内の影響力のあるユーザーの発見
-- NIP-05認証の確認を含むプロフィール検証
+- NIP-05 認証の確認を含むプロフィール検証
 
 ---
 
-### 5. Nostrを活用したリサーチツール
+### 5. Nostr を活用したリサーチツール
 
-NIP-50検索とAIの分析能力を組み合わせた調査・リサーチ支援。
+NIP-50 検索と AI の分析能力を組み合わせた調査・リサーチ支援。
 
 **シナリオ例:**
 ```
-ユーザー: 「Nostr上でのLightning Network関連の議論をまとめて」
+ユーザー: 「Nostr 上での Lightning Network 関連の議論をまとめて」
 
 AI Agent:
 1. search_nostr_notes で "lightning network" を検索
@@ -319,16 +285,16 @@ AI Agent:
 
 ---
 
-### 6. スレッド会話のコンテキスト理解（Phase 2連携）
+### 6. スレッド会話のコンテキスト理解（Phase 2 連携）
 
-スレッド形式の議論を取得し、AIが文脈を理解した上で返信案を提案するワークフロー。
+スレッド形式の議論を取得し、AI が文脈を理解した上で返信案を提案するワークフロー。
 
 **シナリオ例:**
 ```
 ユーザー: 「このスレッドの議論を読んで、返信を考えて」
 
 AI Agent:
-1. get_nostr_thread でスレッド全体を取得（Phase 2実装後）
+1. get_nostr_thread でスレッド全体を取得（Phase 2 実装後）
 2. 議論の流れと各参加者の立場を分析
 3. 文脈に合った返信案を複数提示
 4. ユーザーが選択した返信を reply_to_note で投稿
@@ -343,7 +309,7 @@ AI Agent:
 
 ### 7. コンテンツモデレーション支援
 
-タイムラインやスレッドのコンテンツをAIが分析し、モデレーション判断を支援。
+タイムラインやスレッドのコンテンツを AI が分析し、モデレーション判断を支援。
 
 **シナリオ例:**
 ```
@@ -363,23 +329,23 @@ AI Agent:
 
 ---
 
-### 8. クロスプラットフォーム発信の起点としてのNostr
+### 8. クロスプラットフォーム発信の起点としての Nostr
 
-Nostrへの投稿をベースに、他プラットフォーム向けのコンテンツを生成するワークフロー。
+Nostr への投稿をベースに、他プラットフォーム向けのコンテンツを生成するワークフロー。
 
 **シナリオ例:**
 ```
-ユーザー: 「このNostr記事をブログ記事とSNS投稿に変換して」
+ユーザー: 「この Nostr 記事をブログ記事と SNS 投稿に変換して」
 
 AI Agent:
 1. get_nostr_articles で元記事を取得
-2. ブログ向けにHTML/Markdown形式で再構成
-3. 短文SNS向けに要点をまとめた投稿を生成
+2. ブログ向けに HTML/Markdown 形式で再構成
+3. 短文 SNS 向けに要点をまとめた投稿を生成
 4. 各プラットフォーム向けフォーマットで出力
 ```
 
 **活用場面:**
-- Nostrファーストのコンテンツ戦略
+- Nostr ファーストのコンテンツ戦略
 - 記事の多チャネル展開
 - 長文記事から短文投稿シリーズの自動生成
 
@@ -387,21 +353,21 @@ AI Agent:
 
 ### MCP クライアント別の活用
 
-| MCPクライアント | 主な活用シナリオ |
+| MCP クライアント | 主な活用シナリオ |
 |----------------|----------------|
-| **Claude Desktop** | 対話型のNostr投稿・リサーチ、記事の下書き支援 |
-| **Goose** | 開発者向け自動化、Nostrボットのプロトタイピング |
+| **Claude Desktop** | 対話型の Nostr 投稿・リサーチ、記事の下書き支援 |
+| **Goose** | 開発者向け自動化、Nostr ボットのプロトタイピング |
 | **mcp-app** | ビジュアルなタイムライン表示、記事プレビュー |
-| **カスタムMCPクライアント** | 特定用途のNostr連携アプリケーション構築 |
+| **カスタム MCP クライアント** | 特定用途の Nostr 連携アプリケーション構築 |
 
 ---
 
-## Configuration Reference
+## 設定リファレンス
 
-### Config File Location
+### 設定ファイルの場所
 `~/.config/rust-nostr-mcp/config.json`
 
-### Config Format (algia-compatible)
+### 設定形式（algia 互換）
 ```json
 {
   "relays": {
@@ -421,71 +387,71 @@ AI Agent:
 }
 ```
 
-### Relay Configuration Options
-- `read`: Fetch events from this relay
-- `write`: Publish events to this relay
-- `search`: Use for NIP-50 search queries
+### リレー設定オプション
+- `read`: このリレーからイベントを取得
+- `write`: このリレーにイベントを公開
+- `search`: NIP-50 検索クエリに使用
 
 ---
 
-## Development Guidelines
+## 開発ガイドライン
 
-### Code Structure
+### コード構成
 ```
 src/
-├── main.rs          # Entry point, config loading
-├── config.rs        # Configuration management
-├── mcp.rs           # MCP protocol handler
-├── nostr_client.rs  # Nostr SDK wrapper
-└── tools.rs         # Tool definitions and executors
+├── main.rs          # エントリーポイント、設定読み込み
+├── config.rs        # 設定管理
+├── mcp.rs           # MCP プロトコルハンドラ
+├── nostr_client.rs  # Nostr SDK ラッパー
+└── tools.rs         # ツール定義とエグゼキュータ
 ```
 
-### Adding New Tools
+### 新しいツールの追加方法
 
-1. Add tool definition in `tools.rs`:
+1. `tools.rs` にツール定義を追加:
    ```rust
    ToolDefinition {
        name: "new_tool_name".to_string(),
-       description: "Description".to_string(),
+       description: "説明".to_string(),
        input_schema: json!({ ... }),
    }
    ```
 
-2. Add handler in `ToolExecutor::execute()`:
+2. `ToolExecutor::execute()` にハンドラを追加:
    ```rust
    "new_tool_name" => self.new_tool(arguments).await,
    ```
 
-3. Implement the tool method:
+3. ツールメソッドを実装:
    ```rust
    async fn new_tool(&self, arguments: Value) -> Result<Value> {
-       // Implementation
+       // 実装
    }
    ```
 
-4. Add corresponding method in `nostr_client.rs` if needed.
+4. 必要に応じて `nostr_client.rs` に対応メソッドを追加。
 
-### Testing
+### テスト
 ```bash
-# Build
+# ビルド
 cargo build
 
-# Run with debug logging
+# デバッグログ付きで実行
 RUST_LOG=debug cargo run
 
-# Test with MCP inspector
+# MCP インスペクターでテスト
 npx @anthropics/mcp-inspector cargo run
 ```
 
 ---
 
-## Contributing
+## 貢献
 
-1. Fork the repository
-2. Create a feature branch
-3. Implement changes with tests
-4. Submit a pull request
+1. リポジトリをフォーク
+2. フィーチャーブランチを作成
+3. テスト付きで変更を実装
+4. プルリクエストを送信
 
-## License
+## ライセンス
 
-MIT License
+MIT ライセンス

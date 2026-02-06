@@ -1,10 +1,10 @@
-//! Nostr MCP Server
+//! Nostr MCP サーバー
 //!
-//! A Model Context Protocol (MCP) server that enables AI agents to interact
-//! with the Nostr network for reading and writing notes.
+//! AI エージェントが Nostr ネットワークと対話するための
+//! Model Context Protocol (MCP) サーバーです。
 //!
-//! Configuration is stored in ~/.config/rust-nostr-mcp/config.json
-//! Private keys are stored locally and never passed to AI agents.
+//! 設定は ~/.config/rust-nostr-mcp/config.json に保存されます。
+//! 秘密鍵はローカルに保存され、AI エージェントには渡されません。
 
 mod config;
 mod mcp;
@@ -19,8 +19,8 @@ use crate::config::Config;
 use crate::mcp::McpServer;
 use crate::nostr_client::NostrClientConfig;
 
-/// Initialize logging with tracing subscriber.
-/// Logs are written to stderr to avoid interfering with MCP communication on stdout.
+/// ログの初期化（tracing subscriber を使用）
+/// MCP 通信（stdout）と干渉しないよう、ログは stderr に出力します。
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
@@ -36,14 +36,13 @@ fn init_logging() {
         .init();
 }
 
-/// Load configuration from config file (~/.config/rust-nostr-mcp/config.json).
-/// Falls back to environment variables for backward compatibility.
+/// 設定ファイル (~/.config/rust-nostr-mcp/config.json) から設定を読み込みます。
+/// 後方互換性のため、環境変数へのフォールバックもサポートしています。
 fn load_config() -> NostrClientConfig {
-    // Try to load from config file first
     let config = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            warn!("Failed to load config file, using defaults: {}", e);
+            warn!("設定ファイルの読み込みに失敗しました。デフォルト設定を使用します: {}", e);
             Config::default()
         }
     };
@@ -51,8 +50,8 @@ fn load_config() -> NostrClientConfig {
     let secret_key = config.privatekey.clone();
 
     if secret_key.is_none() {
-        warn!("No private key configured. Running in read-only mode.");
-        warn!("To enable write access, add your nsec to: {:?}", Config::config_path().unwrap_or_default());
+        warn!("秘密鍵が設定されていません。読み取り専用モードで起動します。");
+        warn!("書き込みアクセスを有効にするには、nsec を設定ファイルに追加してください: {:?}", Config::config_path().unwrap_or_default());
     }
 
     let relays = config.read_relays();
@@ -65,15 +64,15 @@ fn load_config() -> NostrClientConfig {
     }
 }
 
-/// Print configuration instructions on first run.
+/// 初回起動時のセットアップ手順を表示します。
 fn print_setup_instructions() {
     let config_path = Config::config_path().unwrap_or_default();
     eprintln!();
-    eprintln!("=== Nostr MCP Server Setup ===");
+    eprintln!("=== Nostr MCP サーバー セットアップ ===");
     eprintln!();
-    eprintln!("Configuration file: {:?}", config_path);
+    eprintln!("設定ファイル: {:?}", config_path);
     eprintln!();
-    eprintln!("To enable posting, add your private key (nsec) to the config file:");
+    eprintln!("投稿を有効にするには、秘密鍵 (nsec) を設定ファイルに追加してください:");
     eprintln!();
     eprintln!("  {{");
     eprintln!("    \"relays\": {{");
@@ -82,7 +81,7 @@ fn print_setup_instructions() {
     eprintln!("    \"privatekey\": \"nsec1...\"");
     eprintln!("  }}");
     eprintln!();
-    eprintln!("IMPORTANT: Your private key is stored locally and never passed to AI agents.");
+    eprintln!("重要: 秘密鍵はローカルに保存され、AI エージェントには渡されません。");
     eprintln!();
 }
 
@@ -90,23 +89,23 @@ fn print_setup_instructions() {
 async fn main() -> Result<()> {
     init_logging();
 
-    info!("Starting Nostr MCP Server...");
+    info!("Nostr MCP サーバーを起動中...");
 
-    // Create default config file if it doesn't exist
+    // 初回起動時にデフォルト設定ファイルを作成
     match Config::create_default_if_missing() {
         Ok(true) => print_setup_instructions(),
         Ok(false) => {}
-        Err(e) => warn!("Could not create default config: {}", e),
+        Err(e) => warn!("デフォルト設定の作成に失敗: {}", e),
     }
 
     let config = load_config();
 
-    info!("Loaded configuration:");
-    info!("  - Read relays: {:?}", config.relays);
-    info!("  - Search relays: {:?}", config.search_relays);
-    info!("  - Write access: {}", if config.secret_key.is_some() { "enabled" } else { "disabled (read-only)" });
+    info!("設定を読み込みました:");
+    info!("  - 読み取りリレー: {:?}", config.relays);
+    info!("  - 検索リレー: {:?}", config.search_relays);
+    info!("  - 書き込みアクセス: {}", if config.secret_key.is_some() { "有効" } else { "無効（読み取り専用）" });
 
-    // Create and run MCP server
+    // MCP サーバーを作成して実行
     let server = McpServer::new(config).await?;
     server.run().await?;
 

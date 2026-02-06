@@ -1,7 +1,7 @@
-//! Configuration Module
+//! 設定モジュール
 //!
-//! Handles loading and saving configuration from ~/.config/rust-nostr-mcp/config.json
-//! Following the algia convention for configuration file structure.
+//! ~/.config/rust-nostr-mcp/config.json からの設定の読み込みと保存を管理します。
+//! algia の設定ファイル構造に準拠しています。
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -10,14 +10,14 @@ use std::fs;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-/// Relay configuration following algia convention.
+/// algia 規則に準拠したリレー設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayConfig {
-    /// Whether to read from this relay
+    /// このリレーから読み取るかどうか
     pub read: bool,
-    /// Whether to write to this relay
+    /// このリレーに書き込むかどうか
     pub write: bool,
-    /// Whether this relay supports NIP-50 search
+    /// このリレーが NIP-50 検索をサポートするかどうか
     pub search: bool,
 }
 
@@ -31,15 +31,15 @@ impl Default for RelayConfig {
     }
 }
 
-/// Main configuration structure following algia convention.
+/// algia 規則に準拠したメイン設定構造体
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// Relay configurations keyed by URL
+    /// URL をキーとするリレー設定
     pub relays: HashMap<String, RelayConfig>,
-    /// Private key in nsec format (stored locally, never passed to AI agents)
+    /// nsec 形式の秘密鍵（ローカルに保存、AI エージェントには渡されない）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub privatekey: Option<String>,
-    /// Nostr Wallet Connect URI (optional)
+    /// Nostr Wallet Connect URI（任意）
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "nwc-uri")]
     pub nwc_uri: Option<String>,
@@ -49,7 +49,6 @@ impl Default for Config {
     fn default() -> Self {
         let mut relays = HashMap::new();
 
-        // Default relays
         relays.insert(
             "wss://relay.damus.io".to_string(),
             RelayConfig { read: true, write: true, search: false },
@@ -80,49 +79,45 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Get the configuration file path.
+    /// 設定ファイルのパスを取得
     pub fn config_path() -> Result<PathBuf> {
         let config_dir = dirs::config_dir()
-            .context("Could not determine config directory")?
+            .context("設定ディレクトリを特定できません")?
             .join("rust-nostr-mcp");
 
         Ok(config_dir.join("config.json"))
     }
 
-    /// Load configuration from the config file.
-    /// Falls back to environment variables for backward compatibility.
+    /// 設定ファイルから設定を読み込みます。
+    /// 後方互換性のため、環境変数へのフォールバックもサポートしています。
     pub fn load() -> Result<Self> {
         let config_path = Self::config_path()?;
 
         if config_path.exists() {
-            info!("Loading configuration from {:?}", config_path);
+            info!("設定ファイルを読み込み中: {:?}", config_path);
             let content = fs::read_to_string(&config_path)
-                .context("Failed to read config file")?;
+                .context("設定ファイルの読み込みに失敗しました")?;
             let config: Config = serde_json::from_str(&content)
-                .context("Failed to parse config file")?;
+                .context("設定ファイルのパースに失敗しました")?;
             return Ok(config);
         }
 
-        // Fall back to environment variables for backward compatibility
-        warn!("Config file not found at {:?}, checking environment variables", config_path);
+        warn!("設定ファイルが見つかりません: {:?}。環境変数を確認します", config_path);
         Self::load_from_env()
     }
 
-    /// Load configuration from environment variables (backward compatibility).
+    /// 環境変数から設定を読み込みます（後方互換性）。
     fn load_from_env() -> Result<Self> {
-        // Load .env file if present
         let _ = dotenvy::dotenv();
 
         let mut config = Self::default();
 
-        // Try to load secret key from environment
         if let Ok(nsec) = std::env::var("NSEC") {
             config.privatekey = Some(nsec);
         } else if let Ok(hex_key) = std::env::var("NOSTR_SECRET_KEY") {
             config.privatekey = Some(hex_key);
         }
 
-        // Load custom relays if specified
         if let Ok(relay_list) = std::env::var("NOSTR_RELAYS") {
             config.relays.clear();
             for relay in relay_list.split(',').map(|s| s.trim()) {
@@ -133,7 +128,6 @@ impl Config {
             }
         }
 
-        // Load search relays if specified
         if let Ok(search_list) = std::env::var("NOSTR_SEARCH_RELAYS") {
             for relay in search_list.split(',').map(|s| s.trim()) {
                 config.relays
@@ -146,41 +140,40 @@ impl Config {
         Ok(config)
     }
 
-    /// Save configuration to the config file.
+    /// 設定をファイルに保存します。
     pub fn save(&self) -> Result<()> {
         let config_path = Self::config_path()?;
 
-        // Create parent directories if they don't exist
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)
-                .context("Failed to create config directory")?;
+                .context("設定ディレクトリの作成に失敗しました")?;
         }
 
         let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+            .context("設定のシリアライズに失敗しました")?;
 
         fs::write(&config_path, content)
-            .context("Failed to write config file")?;
+            .context("設定ファイルの書き込みに失敗しました")?;
 
-        info!("Configuration saved to {:?}", config_path);
+        info!("設定を保存しました: {:?}", config_path);
         Ok(())
     }
 
-    /// Create a default config file if it doesn't exist.
+    /// 設定ファイルが存在しない場合、デフォルト設定で作成します。
     pub fn create_default_if_missing() -> Result<bool> {
         let config_path = Self::config_path()?;
 
         if !config_path.exists() {
             let default_config = Self::default();
             default_config.save()?;
-            info!("Created default configuration at {:?}", config_path);
+            info!("デフォルト設定を作成しました: {:?}", config_path);
             return Ok(true);
         }
 
         Ok(false)
     }
 
-    /// Get read-enabled relay URLs.
+    /// 読み取り有効なリレー URL を取得
     pub fn read_relays(&self) -> Vec<String> {
         self.relays
             .iter()
@@ -189,7 +182,8 @@ impl Config {
             .collect()
     }
 
-    /// Get write-enabled relay URLs.
+    /// 書き込み有効なリレー URL を取得
+    #[allow(dead_code)]
     pub fn write_relays(&self) -> Vec<String> {
         self.relays
             .iter()
@@ -198,18 +192,13 @@ impl Config {
             .collect()
     }
 
-    /// Get search-enabled relay URLs.
+    /// 検索有効なリレー URL を取得
     pub fn search_relays(&self) -> Vec<String> {
         self.relays
             .iter()
             .filter(|(_, c)| c.search)
             .map(|(url, _)| url.clone())
             .collect()
-    }
-
-    /// Check if the config has a private key set.
-    pub fn has_private_key(&self) -> bool {
-        self.privatekey.is_some()
     }
 }
 
