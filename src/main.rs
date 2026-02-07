@@ -6,6 +6,7 @@
 //! 設定は ~/.config/rust-nostr-mcp/config.json に保存されます。
 //! 秘密鍵はローカルに保存され、AI エージェントには渡されません。
 
+mod blossom;
 mod config;
 mod content;
 mod mcp;

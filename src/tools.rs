@@ -6,7 +6,8 @@
 //! セキュリティ: 秘密鍵はローカル設定ファイル
 //! (~/.config/rust-nostr-mcp/config.json) に保存され、AI エージェントには渡されません。
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use base64::Engine;
 use nostr_sdk::ToBech32;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -571,6 +572,67 @@ pub fn get_tool_definitions(ui_enabled: bool) -> Vec<ToolDefinition> {
             }),
             meta: meta("nostr_disconnect"),
         },
+        // NIP-B7: Blossom メディアアップロード
+        ToolDefinition {
+            name: "upload_media".to_string(),
+            description: "Blossom サーバーにメディアファイルをアップロードします (NIP-B7, BUD-02)。アップロード後の URL を返します。書き込みアクセスが必要です。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "アップロードするローカルファイルのパス（file_path または data のいずれかが必須）"
+                    },
+                    "data": {
+                        "type": "string",
+                        "description": "Base64 エンコードされたファイルデータ（file_path または data のいずれかが必須）"
+                    },
+                    "content_type": {
+                        "type": "string",
+                        "description": "ファイルの MIME タイプ（任意、拡張子から自動推測）"
+                    },
+                    "server": {
+                        "type": "string",
+                        "description": "Blossom サーバー URL（任意、未指定時はユーザーのサーバーリストまたはデフォルトを使用）"
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "ファイル名（data 使用時の MIME タイプ推測用、任意）"
+                    }
+                }
+            }),
+            meta: meta("upload_media"),
+        },
+        ToolDefinition {
+            name: "get_blossom_servers".to_string(),
+            description: "ユーザーの Blossom サーバーリスト (Kind 10063, NIP-B7) を取得します。メディアアップロード先として使用されるサーバーの一覧を返します。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pubkey": {
+                        "type": "string",
+                        "description": "npub (bech32) または hex 形式の公開鍵（任意、未指定時は自分のリスト）"
+                    }
+                }
+            }),
+            meta: meta("get_blossom_servers"),
+        },
+        ToolDefinition {
+            name: "set_blossom_servers".to_string(),
+            description: "Blossom サーバーリスト (Kind 10063, NIP-B7) を公開します。メディアアップロードに使用するサーバーを設定します。書き込みアクセスが必要です。".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "servers": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Blossom サーバー URL のリスト（例: [\"https://blossom.primal.net\"]）"
+                    }
+                },
+                "required": ["servers"]
+            }),
+            meta: meta("set_blossom_servers"),
+        },
     ]
 }
 
@@ -620,6 +682,10 @@ impl ToolExecutor {
             "nostr_connect" => self.nostr_connect(arguments).await,
             "nostr_connect_status" => self.nostr_connect_status().await,
             "nostr_disconnect" => self.nostr_disconnect().await,
+            // NIP-B7: Blossom メディアアップロード
+            "upload_media" => self.upload_media(arguments).await,
+            "get_blossom_servers" => self.get_blossom_servers(arguments).await,
+            "set_blossom_servers" => self.set_blossom_servers(arguments).await,
             _ => Err(anyhow!("不明なツール: {}", name)),
         }
     }
@@ -1119,6 +1185,144 @@ impl ToolExecutor {
         Ok(json!({
             "success": true,
             "message": "NIP-46 リモートサイナーとの接続を切断しました。読み取り専用モードに戻ります。"
+        }))
+    }
+
+    // ========================================
+    // NIP-B7: Blossom メディアアップロード
+    // ========================================
+
+    /// メディアファイルを Blossom サーバーにアップロード
+    async fn upload_media(&self, arguments: Value) -> Result<Value> {
+        let file_path = optional_str_param(&arguments, "file_path");
+        let data_base64 = optional_str_param(&arguments, "data");
+        let content_type_param = optional_str_param(&arguments, "content_type");
+        let server_param = optional_str_param(&arguments, "server");
+        let filename_param = optional_str_param(&arguments, "filename");
+
+        // ファイルデータの取得
+        let (data, guessed_filename) = if let Some(path) = file_path {
+            let file_data = tokio::fs::read(path)
+                .await
+                .context(format!("ファイルの読み込みに失敗: {}", path))?;
+            let name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string();
+            (file_data, name)
+        } else if let Some(b64) = data_base64 {
+            let file_data = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .context("Base64 データのデコードに失敗")?;
+            let name = filename_param.unwrap_or("file").to_string();
+            (file_data, name)
+        } else {
+            return Err(anyhow!(
+                "file_path または data のいずれかを指定してください"
+            ));
+        };
+
+        // MIME タイプの決定
+        let content_type = content_type_param
+            .unwrap_or_else(|| crate::blossom::guess_content_type(&guessed_filename));
+
+        // Blossom サーバー URL の決定
+        let server_url = if let Some(server) = server_param {
+            server.to_string()
+        } else {
+            // 1. ユーザーの Kind 10063 サーバーリストから取得を試みる
+            let servers = self
+                .client
+                .read()
+                .await
+                .get_blossom_servers(None)
+                .await
+                .unwrap_or_default();
+
+            if let Some(first) = servers.first() {
+                first.clone()
+            } else {
+                // 2. デフォルトサーバーを使用
+                crate::blossom::DEFAULT_BLOSSOM_SERVERS[0].to_string()
+            }
+        };
+
+        debug!(
+            "メディアアップロード: file={}, type={}, server={}",
+            guessed_filename, content_type, server_url
+        );
+
+        let descriptor = self
+            .client
+            .read()
+            .await
+            .upload_media(data, content_type, &server_url)
+            .await?;
+
+        Ok(json!({
+            "success": true,
+            "url": descriptor.url,
+            "sha256": descriptor.sha256,
+            "size": descriptor.size,
+            "type": descriptor.content_type,
+            "uploaded": descriptor.uploaded,
+            "server": server_url,
+            "message": format!("メディアをアップロードしました: {}", descriptor.url)
+        }))
+    }
+
+    /// Blossom サーバーリストを取得
+    async fn get_blossom_servers(&self, arguments: Value) -> Result<Value> {
+        let pubkey = optional_str_param(&arguments, "pubkey");
+
+        debug!("Blossom サーバーリスト取得: pubkey={:?}", pubkey);
+
+        let servers = self
+            .client
+            .read()
+            .await
+            .get_blossom_servers(pubkey)
+            .await?;
+
+        Ok(json!({
+            "success": true,
+            "count": servers.len(),
+            "servers": servers
+        }))
+    }
+
+    /// Blossom サーバーリストを設定・公開
+    async fn set_blossom_servers(&self, arguments: Value) -> Result<Value> {
+        let servers: Vec<String> = arguments
+            .get("servers")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| item.as_str().map(String::from))
+                    .collect()
+            })
+            .ok_or_else(|| anyhow!("servers パラメータ（文字列配列）が必要です"))?;
+
+        if servers.is_empty() {
+            return Err(anyhow!("サーバーリストが空です。少なくとも 1 つの URL を指定してください"));
+        }
+
+        debug!("Blossom サーバーリスト設定: {:?}", servers);
+
+        let event_id = self
+            .client
+            .read()
+            .await
+            .publish_blossom_servers(&servers)
+            .await?;
+
+        Ok(json!({
+            "success": true,
+            "event_id": event_id.to_hex(),
+            "count": servers.len(),
+            "servers": servers,
+            "message": format!("Blossom サーバーリストを公開しました ({} サーバー)", servers.len())
         }))
     }
 

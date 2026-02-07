@@ -77,6 +77,10 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "nip46-perms")]
     pub nip46_perms: Option<String>,
+    /// Blossom サーバー URL リスト（NIP-B7 メディアアップロード用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "blossom-servers")]
+    pub blossom_servers: Option<Vec<String>>,
 }
 
 impl Default for Config {
@@ -112,6 +116,7 @@ impl Default for Config {
             bunker_uri: None,
             nip46_relays: None,
             nip46_perms: None,
+            blossom_servers: None,
         }
     }
 }

@@ -53,6 +53,10 @@ qrcode = "0.14"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# NIP-B7 Blossom media upload
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10"
+
 [profile.release]
 opt-level = 3
 lto = true
