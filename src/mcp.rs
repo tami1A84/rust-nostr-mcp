@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::config::AuthMode;
@@ -82,8 +83,8 @@ impl JsonRpcResponse {
 
 /// MCP サーバーの実装
 pub struct McpServer {
-    /// Nostr クライアント
-    client: Arc<NostrClient>,
+    /// Nostr クライアント（NIP-46 切り替えのため RwLock で保護）
+    client: Arc<RwLock<NostrClient>>,
     /// ツールエグゼキュータ
     tool_executor: ToolExecutor,
     /// サーバーが初期化済みかどうか
@@ -119,7 +120,7 @@ impl McpServer {
             }
         }
 
-        let client = Arc::new(NostrClient::new(config).await?);
+        let client = Arc::new(RwLock::new(NostrClient::new(config).await?));
         let tool_executor = ToolExecutor::new(Arc::clone(&client), Arc::clone(&nip46_session));
 
         Ok(Self {
@@ -167,7 +168,7 @@ impl McpServer {
         }
 
         // クリーンアップ
-        self.client.disconnect().await;
+        self.client.read().await.disconnect().await;
         info!("MCP サーバーをシャットダウンします");
 
         Ok(())

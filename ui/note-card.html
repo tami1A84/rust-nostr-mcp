@@ -4,7 +4,66 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Nostr Note</title>
-  <style>{{COMMON_CSS}}</style>
+  <style>
+    {{COMMON_CSS}}
+
+    .note-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .card + .card {
+      margin-top: 0;
+    }
+
+    .content-text a {
+      color: var(--color-text-info, #0066cc);
+      text-decoration: none;
+    }
+
+    .content-text a:hover {
+      text-decoration: underline;
+    }
+
+    .note-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .video-container {
+      margin-top: 12px;
+      border-radius: var(--border-radius-md, 8px);
+      overflow: hidden;
+    }
+
+    .video-container video {
+      width: 100%;
+      max-height: 360px;
+    }
+
+    .audio-container {
+      margin-top: 12px;
+    }
+
+    .audio-container audio {
+      width: 100%;
+    }
+
+    .nevent-link {
+      display: inline-block;
+      margin-top: 4px;
+      font-family: var(--font-mono, monospace);
+      font-size: var(--font-text-xs-size, 11px);
+      color: var(--color-text-secondary, #666666);
+      text-decoration: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 200px;
+      white-space: nowrap;
+    }
+  </style>
 </head>
 <body>
   <div id="app" class="loading">
@@ -12,7 +71,6 @@
   </div>
 
   <script>
-    // MCP Apps JSON-RPC communication
     let rpcId = 0;
     const pending = new Map();
 
@@ -32,7 +90,6 @@
       const msg = event.data;
       if (!msg || msg.jsonrpc !== "2.0") return;
 
-      // Response to our request
       if (msg.id && pending.has(msg.id)) {
         const { resolve, reject } = pending.get(msg.id);
         pending.delete(msg.id);
@@ -41,7 +98,6 @@
         return;
       }
 
-      // Notifications from host
       if (msg.method === "ui/notifications/tool-result") {
         handleToolResult(msg.params);
       } else if (msg.method === "ui/notifications/tool-input") {
@@ -49,20 +105,18 @@
       } else if (msg.method === "ui/notifications/tool-cancelled") {
         showError("Operation cancelled");
       } else if (msg.method === "ui/notifications/host-context-changed") {
-        handleContextChanged(msg.params);
+        // Theme or dimension changes
       } else if (msg.method === "ui/resource-teardown") {
-        // Respond to teardown
         window.parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
       }
     });
 
-    // Initialize MCP App connection
     async function init() {
       try {
-        const result = await sendRpc("ui/initialize", {
+        await sendRpc("ui/initialize", {
           protocolVersion: "2026-01-26",
           capabilities: {},
-          clientInfo: { name: "nostr-note-card", version: "0.1.0" },
+          clientInfo: { name: "nostr-note-card", version: "0.2.0" },
           appCapabilities: { availableDisplayModes: ["inline"] }
         });
         sendNotification("ui/notifications/initialized", {});
@@ -86,7 +140,12 @@
         if (data.notes) {
           renderNotes(data.notes);
         } else if (data.note || data.root) {
-          renderNotes([data.note || data.root]);
+          // Thread view: show root + replies
+          const notes = [];
+          const root = data.note || data.root;
+          if (root) notes.push(root);
+          if (data.replies) flattenReplies(data.replies, notes);
+          renderNotes(notes);
         } else {
           renderNotes([data]);
         }
@@ -95,10 +154,17 @@
       }
     }
 
+    function flattenReplies(replies, out) {
+      for (const r of replies) {
+        if (r.note) out.push(r.note);
+        if (r.replies) flattenReplies(r.replies, out);
+      }
+    }
+
     function renderNotes(notes) {
       const app = document.getElementById("app");
       app.className = "";
-      app.innerHTML = notes.map(renderSingleNote).join("");
+      app.innerHTML = `<div class="note-list">${notes.map(renderSingleNote).join("")}</div>`;
     }
 
     function renderSingleNote(note) {
@@ -107,18 +173,31 @@
       const avatar = author.picture || "";
       const nip05 = author.nip05 ? `@${author.nip05}` : shortKey(author.npub || "");
       const time = note.formatted_time || "";
-      const content = escapeHtml(note.content || "");
+      const content = formatContent(note.content || "");
       const reactions = note.reactions || 0;
       const replies = note.replies || 0;
-      const media = note.media || {};
+      const nevent = note.nevent || "";
+      const media = note.media || note.parsed_content?.media || {};
       const images = media.images || [];
+      const videos = media.videos || [];
+      const audios = media.audios || [];
 
       let mediaHtml = "";
       if (images.length > 0) {
-        const gridCols = images.length === 1 ? "1fr" : images.length === 2 ? "1fr 1fr" : "1fr 1fr";
-        mediaHtml = `<div class="media-grid" style="grid-template-columns: ${gridCols}">
+        const cols = images.length === 1 ? "1fr" : images.length <= 4 ? "1fr 1fr" : "1fr 1fr 1fr";
+        mediaHtml += `<div class="media-grid" style="grid-template-columns: ${cols}">
           ${images.map(url => `<img src="${escapeAttr(url)}" alt="" loading="lazy">`).join("")}
         </div>`;
+      }
+      if (videos.length > 0) {
+        mediaHtml += videos.map(url => `<div class="video-container">
+          <video src="${escapeAttr(url)}" controls preload="metadata"></video>
+        </div>`).join("");
+      }
+      if (audios.length > 0) {
+        mediaHtml += audios.map(url => `<div class="audio-container">
+          <audio src="${escapeAttr(url)}" controls preload="metadata"></audio>
+        </div>`).join("");
       }
 
       const hashtags = note.parsed_content?.hashtags || [];
@@ -143,9 +222,21 @@
         <div class="card-footer">
           ${reactions > 0 ? `<span class="stat">${reactions} reactions</span>` : ""}
           ${replies > 0 ? `<span class="stat">${replies} replies</span>` : ""}
+          ${nevent ? `<span class="nevent-link" title="${escapeAttr(nevent)}">${shortKey(nevent)}</span>` : ""}
           <span class="timestamp">${escapeHtml(time)}</span>
         </div>
       </div>`;
+    }
+
+    function formatContent(text) {
+      // Escape HTML first
+      let html = escapeHtml(text);
+      // Convert URLs to links
+      html = html.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+      // Highlight nostr: references
+      html = html.replace(/nostr:(npub1|note1|nevent1|nprofile1|naddr1)[a-z0-9]+/g,
+        '<a href="#" class="nostr-ref">$&</a>');
+      return html;
     }
 
     function showError(msg) {
@@ -154,23 +245,19 @@
       app.innerHTML = `<div class="error">${escapeHtml(msg)}</div>`;
     }
 
-    function handleContextChanged(params) {
-      // Theme or dimension changes from host
-    }
-
     function escapeHtml(str) {
       const div = document.createElement("div");
-      div.textContent = str;
+      div.textContent = str || "";
       return div.innerHTML;
     }
 
     function escapeAttr(str) {
-      return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return (str || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
-    function shortKey(npub) {
-      if (!npub || npub.length < 16) return npub || "";
-      return npub.slice(0, 12) + "..." + npub.slice(-4);
+    function shortKey(val) {
+      if (!val || val.length < 16) return val || "";
+      return val.slice(0, 12) + "..." + val.slice(-4);
     }
 
     init();

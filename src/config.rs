@@ -211,23 +211,29 @@ impl Config {
         Ok(false)
     }
 
-    /// 読み取り有効なリレー URL を取得
-    pub fn read_relays(&self) -> Vec<String> {
+    /// 指定条件に一致するリレー URL を取得する汎用ヘルパー
+    fn relays_by<F: Fn(&RelayConfig) -> bool>(&self, predicate: F) -> Vec<String> {
         self.relays
             .iter()
-            .filter(|(_, c)| c.read)
+            .filter(|(_, c)| predicate(c))
             .map(|(url, _)| url.clone())
             .collect()
+    }
+
+    /// 読み取り有効なリレー URL を取得
+    pub fn read_relays(&self) -> Vec<String> {
+        self.relays_by(|c| c.read)
     }
 
     /// 書き込み有効なリレー URL を取得
     #[allow(dead_code)]
     pub fn write_relays(&self) -> Vec<String> {
-        self.relays
-            .iter()
-            .filter(|(_, c)| c.write)
-            .map(|(url, _)| url.clone())
-            .collect()
+        self.relays_by(|c| c.write)
+    }
+
+    /// 検索有効なリレー URL を取得
+    pub fn search_relays(&self) -> Vec<String> {
+        self.relays_by(|c| c.search)
     }
 
     /// 有効な認証モードを取得（未指定の場合はデフォルト判定）
@@ -241,15 +247,6 @@ impl Config {
         } else {
             AuthMode::Local
         }
-    }
-
-    /// 検索有効なリレー URL を取得
-    pub fn search_relays(&self) -> Vec<String> {
-        self.relays
-            .iter()
-            .filter(|(_, c)| c.search)
-            .map(|(url, _)| url.clone())
-            .collect()
     }
 }
 

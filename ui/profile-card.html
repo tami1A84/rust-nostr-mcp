@@ -35,8 +35,42 @@
       color: var(--color-text-info, #0066cc);
     }
 
+    .profile-nip05-badge .verified-icon {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--color-text-info, #0066cc);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .profile-nip05-badge .verified-icon::after {
+      content: "";
+      display: block;
+      width: 5px;
+      height: 8px;
+      border: 1.5px solid #fff;
+      border-top: none;
+      border-left: none;
+      transform: rotate(45deg) translateY(-1px);
+    }
+
+    .profile-npub {
+      margin-top: 4px;
+      font-family: var(--font-mono, monospace);
+      font-size: var(--font-text-xs-size, 11px);
+      color: var(--color-text-secondary, #666666);
+      cursor: pointer;
+    }
+
+    .profile-npub:hover {
+      color: var(--color-text-info, #0066cc);
+    }
+
     .profile-bio {
-      margin-top: 8px;
+      margin-top: 10px;
       font-size: var(--font-text-sm-size, 13px);
       line-height: var(--font-text-sm-line-height, 1.5);
       color: var(--color-text-primary, #1a1a1a);
@@ -45,23 +79,65 @@
     }
 
     .profile-links {
-      margin-top: 8px;
+      margin-top: 10px;
       font-size: var(--font-text-xs-size, 12px);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
     }
 
-    .profile-links a {
+    .profile-link {
+      display: flex;
+      align-items: center;
+      gap: 6px;
       color: var(--color-text-info, #0066cc);
       text-decoration: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
-    .profile-links a:hover {
+    .profile-link:hover {
       text-decoration: underline;
+    }
+
+    .profile-link-icon {
+      flex-shrink: 0;
+      font-size: 14px;
+    }
+
+    .profile-lud16 {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--color-text-warning, #cc8800);
+      font-size: var(--font-text-xs-size, 12px);
     }
 
     .profile-actions {
       display: flex;
       gap: 8px;
       margin-top: 12px;
+    }
+
+    .profile-zap-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 14px;
+      border: none;
+      border-radius: var(--border-radius-md, 8px);
+      background: var(--color-background-warning, #fff8e0);
+      color: var(--color-text-warning, #cc8800);
+      font-size: var(--font-text-xs-size, 12px);
+      font-family: inherit;
+      font-weight: var(--font-weight-semibold, 600);
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    .profile-zap-btn:hover {
+      opacity: 0.85;
     }
   </style>
 </head>
@@ -73,6 +149,7 @@
   <script>
     let rpcId = 0;
     const pending = new Map();
+    let profileData = null;
 
     function sendRpc(method, params) {
       const id = ++rpcId;
@@ -112,7 +189,7 @@
         await sendRpc("ui/initialize", {
           protocolVersion: "2026-01-26",
           capabilities: {},
-          clientInfo: { name: "nostr-profile-card", version: "0.1.0" },
+          clientInfo: { name: "nostr-profile-card", version: "0.2.0" },
           appCapabilities: { availableDisplayModes: ["inline"] }
         });
         sendNotification("ui/notifications/initialized", {});
@@ -129,6 +206,7 @@
       try {
         const text = params.content?.[0]?.text || "{}";
         const data = JSON.parse(text);
+        profileData = data;
         renderProfile(data);
       } catch (e) {
         showError("Failed to parse result");
@@ -147,6 +225,7 @@
       const bio = card.bio || profile.about || "";
       const website = profile.website || "";
       const lud16 = profile.lud16 || "";
+      const npub = profile.npub || "";
 
       const app = document.getElementById("app");
       app.className = "";
@@ -156,29 +235,81 @@
           ${avatar ? `<img class="profile-avatar-large" src="${escapeAttr(avatar)}" alt="">` : `<div class="profile-avatar-large"></div>`}
           <div class="profile-name-row">
             <span class="profile-display-name">${escapeHtml(displayName)}</span>
-            ${nip05 ? `<span class="profile-nip05-badge">@${escapeHtml(nip05)}</span>` : ""}
+            ${nip05 ? `<span class="profile-nip05-badge"><span class="verified-icon"></span>${escapeHtml(nip05)}</span>` : ""}
           </div>
-          ${bio ? `<div class="profile-bio">${escapeHtml(bio)}</div>` : ""}
-          ${website || lud16 ? `<div class="profile-links">
-            ${website ? `<div>${escapeHtml(website)}</div>` : ""}
-            ${lud16 ? `<div>${escapeHtml(lud16)}</div>` : ""}
-          </div>` : ""}
+          ${npub ? `<div class="profile-npub" onclick="copyNpub()" title="Click to copy">${escapeHtml(shortKey(npub))}</div>` : ""}
+          ${bio ? `<div class="profile-bio">${formatBio(bio)}</div>` : ""}
+          <div class="profile-links">
+            ${website ? `<a class="profile-link" href="${escapeAttr(website)}" target="_blank" rel="noopener"><span class="profile-link-icon">&#127760;</span>${escapeHtml(cleanUrl(website))}</a>` : ""}
+            ${lud16 ? `<div class="profile-lud16"><span class="profile-link-icon">&#9889;</span>${escapeHtml(lud16)}</div>` : ""}
+          </div>
           <div class="profile-stats">
             <div class="profile-stat">
-              <span class="profile-stat-value">${stats.following ?? "-"}</span>
+              <span class="profile-stat-value">${formatNumber(stats.following)}</span>
               <span class="profile-stat-label">Following</span>
             </div>
             <div class="profile-stat">
-              <span class="profile-stat-value">${stats.followers ?? "-"}</span>
+              <span class="profile-stat-value">${formatNumber(stats.followers)}</span>
               <span class="profile-stat-label">Followers</span>
             </div>
             <div class="profile-stat">
-              <span class="profile-stat-value">${stats.notes ?? "-"}</span>
+              <span class="profile-stat-value">${formatNumber(stats.notes)}</span>
               <span class="profile-stat-label">Notes</span>
             </div>
           </div>
+          ${lud16 ? `<div class="profile-actions">
+            <button class="profile-zap-btn" onclick="zapProfile()">&#9889; Zap</button>
+          </div>` : ""}
         </div>
       </div>`;
+    }
+
+    function formatBio(bio) {
+      let html = escapeHtml(bio);
+      // Convert URLs to links
+      html = html.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--color-text-info,#0066cc);text-decoration:none">$1</a>');
+      // Highlight nostr: references
+      html = html.replace(/nostr:(npub1|note1|nevent1|nprofile1|naddr1)[a-z0-9]+/g,
+        '<a href="#" style="color:var(--color-text-info,#0066cc);text-decoration:none">$&</a>');
+      return html;
+    }
+
+    function cleanUrl(url) {
+      return (url || "").replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "");
+    }
+
+    function formatNumber(n) {
+      if (n == null) return "-";
+      if (n >= 1000000) return `${(n/1000000).toFixed(1)}M`;
+      if (n >= 1000) return `${(n/1000).toFixed(n >= 10000 ? 0 : 1)}K`;
+      return n.toString();
+    }
+
+    function copyNpub() {
+      const npub = profileData?.profile?.npub;
+      if (npub && navigator.clipboard) {
+        navigator.clipboard.writeText(npub).then(() => {
+          const el = document.querySelector(".profile-npub");
+          if (el) {
+            const orig = el.textContent;
+            el.textContent = "Copied!";
+            setTimeout(() => { el.textContent = orig; }, 1500);
+          }
+        });
+      }
+    }
+
+    async function zapProfile() {
+      const npub = profileData?.profile?.npub;
+      if (!npub) return;
+      try {
+        await sendRpc("tools/call", {
+          name: "send_zap",
+          arguments: { target: npub, amount: 21 }
+        });
+      } catch (e) {
+        console.error("Zap failed:", e);
+      }
     }
 
     function showError(msg) {
@@ -189,17 +320,17 @@
 
     function escapeHtml(str) {
       const div = document.createElement("div");
-      div.textContent = str;
+      div.textContent = str || "";
       return div.innerHTML;
     }
 
     function escapeAttr(str) {
-      return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return (str || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
-    function shortKey(npub) {
-      if (!npub || npub.length < 16) return npub || "";
-      return npub.slice(0, 12) + "..." + npub.slice(-4);
+    function shortKey(val) {
+      if (!val || val.length < 16) return val || "";
+      return val.slice(0, 12) + "..." + val.slice(-4);
     }
 
     init();

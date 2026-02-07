@@ -47,6 +47,50 @@ fn extract_limit(arguments: &Value) -> u64 {
         .min(MAX_LIMIT)
 }
 
+/// 必須の文字列パラメータを抽出するヘルパー
+/// 複数のキー名を許容（第一候補、第二候補...）
+fn require_str_param<'a>(arguments: &'a Value, keys: &[&str]) -> Result<&'a str> {
+    for key in keys {
+        if let Some(val) = arguments.get(*key).and_then(|v| v.as_str()) {
+            if !val.is_empty() {
+                return Ok(val);
+            }
+        }
+    }
+    let key_names = keys.join(" / ");
+    Err(anyhow!("必須パラメータが不足: {}", key_names))
+}
+
+/// オプションの文字列パラメータを抽出するヘルパー
+fn optional_str_param<'a>(arguments: &'a Value, key: &str) -> Option<&'a str> {
+    arguments.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+}
+
+/// 記事パラメータを引数から抽出するヘルパー
+fn extract_article_params(arguments: &Value) -> Result<ArticleParams> {
+    let title = require_str_param(arguments, &["title"])?.to_string();
+    let content = require_str_param(arguments, &["content"])?.to_string();
+
+    Ok(ArticleParams {
+        title,
+        content,
+        identifier: optional_str_param(arguments, "identifier").map(String::from),
+        summary: optional_str_param(arguments, "summary").map(String::from),
+        image: optional_str_param(arguments, "image").map(String::from),
+        tags: extract_tags_param(arguments),
+        published_at: arguments.get("published_at").and_then(|v| v.as_u64()),
+    })
+}
+
+/// tags 配列パラメータを抽出するヘルパー
+fn extract_tags_param(arguments: &Value) -> Option<Vec<String>> {
+    arguments.get("tags").and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter().filter_map(|item| item.as_str().map(String::from)).collect()
+        })
+    })
+}
+
 /// ノートを JSON 表示形式にフォーマットするヘルパー（Phase 3: 構造化表示対応）
 fn format_note_json(note: &NoteInfo) -> Value {
     let formatted_time = format_timestamp(note.created_at);
@@ -532,15 +576,15 @@ pub fn get_tool_definitions(ui_enabled: bool) -> Vec<ToolDefinition> {
 
 /// ツール呼び出しを処理するエグゼキュータ
 pub struct ToolExecutor {
-    /// Nostr クライアントインスタンス
-    client: Arc<NostrClient>,
+    /// Nostr クライアントインスタンス（NIP-46 切り替えのため RwLock で保護）
+    client: Arc<tokio::sync::RwLock<NostrClient>>,
     /// NIP-46 セッション（Phase 6）
     nip46_session: Arc<Nip46Session>,
 }
 
 impl ToolExecutor {
     /// 新しいツールエグゼキュータを作成
-    pub fn new(client: Arc<NostrClient>, nip46_session: Arc<Nip46Session>) -> Self {
+    pub fn new(client: Arc<tokio::sync::RwLock<NostrClient>>, nip46_session: Arc<Nip46Session>) -> Self {
         Self {
             client,
             nip46_session,
@@ -582,16 +626,9 @@ impl ToolExecutor {
 
     /// 新しいノートを投稿
     async fn post_note(&self, arguments: Value) -> Result<Value> {
-        let content = arguments
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: content"))?;
+        let content = require_str_param(&arguments, &["content"])?;
 
-        if content.is_empty() {
-            return Err(anyhow!("content は空にできません"));
-        }
-
-        let event_id = self.client.post_note(content).await?;
+        let event_id = self.client.read().await.post_note(content).await?;
 
         Ok(json!({
             "success": true,
@@ -606,7 +643,7 @@ impl ToolExecutor {
         let limit = extract_limit(&arguments);
         debug!("タイムライン取得: limit={}", limit);
 
-        let notes = self.client.get_timeline(limit).await?;
+        let notes = self.client.read().await.get_timeline(limit).await?;
         let formatted_notes: Vec<Value> = notes.iter().map(format_note_json).collect();
 
         Ok(json!({
@@ -618,10 +655,7 @@ impl ToolExecutor {
 
     /// ノートを検索
     async fn search_notes(&self, arguments: Value) -> Result<Value> {
-        let query = arguments
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: query"))?;
+        let query = require_str_param(&arguments, &["query"])?;
 
         if query.is_empty() {
             return Err(anyhow!("query は空にできません"));
@@ -630,7 +664,7 @@ impl ToolExecutor {
         let limit = extract_limit(&arguments);
         debug!("ノート検索: query='{}', limit={}", query, limit);
 
-        let notes = self.client.search_notes(query, limit).await?;
+        let notes = self.client.read().await.search_notes(query, limit).await?;
         let formatted_notes: Vec<Value> = notes.iter().map(format_note_json).collect();
 
         Ok(json!({
@@ -643,23 +677,14 @@ impl ToolExecutor {
 
     /// プロフィールを取得（Phase 3: プロフィールカード・統計情報付き）
     async fn get_profile(&self, arguments: Value) -> Result<Value> {
-        let pubkey = arguments
-            .get("pubkey")
-            .or_else(|| arguments.get("npub"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: pubkey"))?;
-
-        if pubkey.is_empty() {
-            return Err(anyhow!("pubkey は空にできません"));
-        }
-
+        let pubkey = require_str_param(&arguments, &["pubkey", "npub"])?;
         debug!("プロフィール取得: {}", pubkey);
 
-        // プロフィールと統計情報を並行取得
-        let (profile_result, stats_result) = tokio::join!(
-            self.client.get_profile(pubkey),
-            self.client.get_profile_stats(pubkey)
-        );
+        // プロフィールと統計情報を順次取得
+        let client = self.client.read().await;
+        let profile_result = client.get_profile(pubkey).await;
+        let stats_result = client.get_profile_stats(pubkey).await;
+        drop(client);
 
         let profile = profile_result?;
 
@@ -704,40 +729,8 @@ impl ToolExecutor {
 
     /// 長文記事を投稿
     async fn post_article(&self, arguments: Value) -> Result<Value> {
-        let title = arguments
-            .get("title")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: title"))?
-            .to_string();
-
-        let content = arguments
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: content"))?
-            .to_string();
-
-        if title.is_empty() {
-            return Err(anyhow!("title は空にできません"));
-        }
-        if content.is_empty() {
-            return Err(anyhow!("content は空にできません"));
-        }
-
-        let params = ArticleParams {
-            title,
-            content,
-            identifier: arguments.get("identifier").and_then(|v| v.as_str()).map(String::from),
-            summary: arguments.get("summary").and_then(|v| v.as_str()).map(String::from),
-            image: arguments.get("image").and_then(|v| v.as_str()).map(String::from),
-            tags: arguments.get("tags").and_then(|v| {
-                v.as_array().map(|arr| {
-                    arr.iter().filter_map(|item| item.as_str().map(String::from)).collect()
-                })
-            }),
-            published_at: arguments.get("published_at").and_then(|v| v.as_u64()),
-        };
-
-        let article = self.client.post_article(params).await?;
+        let params = extract_article_params(&arguments)?;
+        let article = self.client.read().await.post_article(params).await?;
 
         Ok(json!({
             "success": true,
@@ -752,25 +745,19 @@ impl ToolExecutor {
 
     /// 長文記事を取得（Phase 3: コンテンツ解析付き）
     async fn get_articles(&self, arguments: Value) -> Result<Value> {
-        let author = arguments.get("author").and_then(|v| v.as_str());
-        let tags: Option<Vec<String>> = arguments.get("tags").and_then(|v| {
-            v.as_array().map(|arr| {
-                arr.iter().filter_map(|item| item.as_str().map(String::from)).collect()
-            })
-        });
+        let author = optional_str_param(&arguments, "author");
+        let tags = extract_tags_param(&arguments);
         let limit = extract_limit(&arguments);
 
         debug!("記事取得: author={:?}, tags={:?}, limit={}", author, tags, limit);
 
-        let articles = self.client.get_articles(
+        let articles = self.client.read().await.get_articles(
             author,
             tags.as_deref(),
             limit,
         ).await?;
 
-        let formatted: Vec<Value> = articles.iter().map(|article| {
-            format_article_json(article)
-        }).collect();
+        let formatted: Vec<Value> = articles.iter().map(format_article_json).collect();
 
         Ok(json!({
             "success": true,
@@ -781,40 +768,9 @@ impl ToolExecutor {
 
     /// 下書きを保存
     async fn save_draft(&self, arguments: Value) -> Result<Value> {
-        let title = arguments
-            .get("title")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: title"))?
-            .to_string();
-
-        let content = arguments
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: content"))?
-            .to_string();
-
-        if title.is_empty() {
-            return Err(anyhow!("title は空にできません"));
-        }
-        if content.is_empty() {
-            return Err(anyhow!("content は空にできません"));
-        }
-
-        let params = ArticleParams {
-            title,
-            content,
-            identifier: arguments.get("identifier").and_then(|v| v.as_str()).map(String::from),
-            summary: arguments.get("summary").and_then(|v| v.as_str()).map(String::from),
-            image: arguments.get("image").and_then(|v| v.as_str()).map(String::from),
-            tags: arguments.get("tags").and_then(|v| {
-                v.as_array().map(|arr| {
-                    arr.iter().filter_map(|item| item.as_str().map(String::from)).collect()
-                })
-            }),
-            published_at: None,
-        };
-
-        let article = self.client.save_draft(params).await?;
+        let mut params = extract_article_params(&arguments)?;
+        params.published_at = None; // 下書きには published_at を設定しない
+        let article = self.client.read().await.save_draft(params).await?;
 
         Ok(json!({
             "success": true,
@@ -834,14 +790,7 @@ impl ToolExecutor {
 
     /// スレッドを取得
     async fn get_thread(&self, arguments: Value) -> Result<Value> {
-        let note_id = arguments
-            .get("note_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: note_id"))?;
-
-        if note_id.is_empty() {
-            return Err(anyhow!("note_id は空にできません"));
-        }
+        let note_id = require_str_param(&arguments, &["note_id"])?;
 
         let depth = arguments
             .get("depth")
@@ -851,7 +800,7 @@ impl ToolExecutor {
 
         debug!("スレッド取得: note_id='{}', depth={}", note_id, depth);
 
-        let thread = self.client.get_thread(note_id, depth).await?;
+        let thread = self.client.read().await.get_thread(note_id, depth).await?;
 
         let formatted_replies: Vec<Value> = thread.replies.iter()
             .map(|reply| format_thread_reply(reply))
@@ -868,23 +817,12 @@ impl ToolExecutor {
 
     /// リアクションを送信
     async fn react_to_note(&self, arguments: Value) -> Result<Value> {
-        let note_id = arguments
-            .get("note_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: note_id"))?;
-
-        if note_id.is_empty() {
-            return Err(anyhow!("note_id は空にできません"));
-        }
-
-        let reaction = arguments
-            .get("reaction")
-            .and_then(|v| v.as_str())
-            .unwrap_or("+");
+        let note_id = require_str_param(&arguments, &["note_id"])?;
+        let reaction = optional_str_param(&arguments, "reaction").unwrap_or("+");
 
         debug!("リアクション送信: note_id='{}', reaction='{}'", note_id, reaction);
 
-        let event_id = self.client.react_to_note(note_id, reaction).await?;
+        let event_id = self.client.read().await.react_to_note(note_id, reaction).await?;
 
         Ok(json!({
             "success": true,
@@ -897,26 +835,12 @@ impl ToolExecutor {
 
     /// ノートに返信
     async fn reply_to_note(&self, arguments: Value) -> Result<Value> {
-        let note_id = arguments
-            .get("note_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: note_id"))?;
-
-        let content = arguments
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: content"))?;
-
-        if note_id.is_empty() {
-            return Err(anyhow!("note_id は空にできません"));
-        }
-        if content.is_empty() {
-            return Err(anyhow!("content は空にできません"));
-        }
+        let note_id = require_str_param(&arguments, &["note_id"])?;
+        let content = require_str_param(&arguments, &["content"])?;
 
         debug!("返信投稿: note_id='{}'", note_id);
 
-        let event_id = self.client.reply_to_note(note_id, content).await?;
+        let event_id = self.client.read().await.reply_to_note(note_id, content).await?;
 
         Ok(json!({
             "success": true,
@@ -935,7 +859,7 @@ impl ToolExecutor {
         let limit = extract_limit(&arguments);
         debug!("通知取得: since={:?}, limit={}", since, limit);
 
-        let notifications = self.client.get_notifications(since, limit).await?;
+        let notifications = self.client.read().await.get_notifications(since, limit).await?;
 
         let formatted: Vec<Value> = notifications.iter().map(|n| {
             json!({
@@ -970,11 +894,9 @@ impl ToolExecutor {
         let limit = extract_limit(&arguments);
         debug!("下書き取得: limit={}", limit);
 
-        let drafts = self.client.get_drafts(limit).await?;
+        let drafts = self.client.read().await.get_drafts(limit).await?;
 
-        let formatted: Vec<Value> = drafts.iter().map(|article| {
-            format_article_json(article)
-        }).collect();
+        let formatted: Vec<Value> = drafts.iter().map(format_article_json).collect();
 
         Ok(json!({
             "success": true,
@@ -989,48 +911,31 @@ impl ToolExecutor {
 
     /// Zap を送信
     async fn send_zap(&self, arguments: Value) -> Result<Value> {
-        let target = arguments
-            .get("target")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: target"))?;
-
+        let target = require_str_param(&arguments, &["target"])?;
         let amount = arguments
             .get("amount")
             .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
             .ok_or_else(|| anyhow!("必須パラメータが不足: amount"))?;
 
-        if target.is_empty() {
-            return Err(anyhow!("target は空にできません"));
-        }
-
         if amount == 0 {
-            return Err(anyhow!("amount は 0 より大きくなければなりません"));
+            return Err(anyhow!("amount は 0 より大きい必要があります"));
         }
 
-        let comment = arguments
-            .get("comment")
-            .and_then(|v| v.as_str());
+        let comment = optional_str_param(&arguments, "comment");
 
         debug!("Zap 送信: target='{}', amount={}, comment={:?}", target, amount, comment);
 
-        self.client.send_zap(target, amount, comment).await
+        self.client.read().await.send_zap(target, amount, comment).await
     }
 
     /// Zap レシートを取得
     async fn get_zap_receipts(&self, arguments: Value) -> Result<Value> {
-        let note_id = arguments
-            .get("note_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: note_id"))?;
-
-        if note_id.is_empty() {
-            return Err(anyhow!("note_id は空にできません"));
-        }
+        let note_id = require_str_param(&arguments, &["note_id"])?;
 
         let limit = extract_limit(&arguments);
         debug!("Zap レシート取得: note_id='{}', limit={}", note_id, limit);
 
-        let receipts = self.client.get_zap_receipts(note_id, limit).await?;
+        let receipts = self.client.read().await.get_zap_receipts(note_id, limit).await?;
 
         let total_sats: u64 = receipts.iter().map(|r| r.amount_sats).sum();
 
@@ -1080,26 +985,12 @@ impl ToolExecutor {
 
     /// ダイレクトメッセージを送信
     async fn send_dm(&self, arguments: Value) -> Result<Value> {
-        let recipient = arguments
-            .get("recipient")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: recipient"))?;
-
-        let content = arguments
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: content"))?;
-
-        if recipient.is_empty() {
-            return Err(anyhow!("recipient は空にできません"));
-        }
-        if content.is_empty() {
-            return Err(anyhow!("content は空にできません"));
-        }
+        let recipient = require_str_param(&arguments, &["recipient"])?;
+        let content = require_str_param(&arguments, &["content"])?;
 
         debug!("DM 送信: recipient='{}'", recipient);
 
-        let event_id = self.client.send_dm(recipient, content).await?;
+        let event_id = self.client.read().await.send_dm(recipient, content).await?;
 
         Ok(json!({
             "success": true,
@@ -1111,18 +1002,14 @@ impl ToolExecutor {
 
     /// ダイレクトメッセージを取得
     async fn get_dms(&self, arguments: Value) -> Result<Value> {
-        let with = arguments
-            .get("with")
-            .and_then(|v| v.as_str());
+        let with = optional_str_param(&arguments, "with");
 
         let limit = extract_limit(&arguments);
         debug!("DM 取得: with={:?}, limit={}", with, limit);
 
-        let messages = self.client.get_dms(with, limit).await?;
+        let messages = self.client.read().await.get_dms(with, limit).await?;
 
-        let formatted: Vec<Value> = messages.iter().map(|dm| {
-            format_dm_json(dm)
-        }).collect();
+        let formatted: Vec<Value> = messages.iter().map(format_dm_json).collect();
 
         Ok(json!({
             "success": true,
@@ -1136,22 +1023,24 @@ impl ToolExecutor {
     // ========================================
 
     /// NIP-46 接続を開始（QR コード生成またはバンカー接続）
+    /// Step 6-3/6-4: 接続完了時に自動的に NostrClient のサイナーを切り替え
     async fn nostr_connect(&self, arguments: Value) -> Result<Value> {
-        let bunker_uri = arguments
-            .get("bunker_uri")
-            .and_then(|v| v.as_str());
+        let bunker_uri = optional_str_param(&arguments, "bunker_uri");
 
         if let Some(uri) = bunker_uri {
-            // バンカー方式
+            // バンカー方式: 即座に接続
             debug!("NIP-46 バンカー接続: {}", uri);
             self.nip46_session.start_bunker_connect(uri).await?;
+
+            // 接続成功 → NostrClient にサイナーを設定
+            self.activate_nip46_signer().await?;
 
             let status = self.nip46_session.status_json().await;
             Ok(json!({
                 "success": true,
                 "mode": "bunker",
                 "status": status["status"],
-                "message": "NIP-46 バンカー接続が完了しました。",
+                "message": "NIP-46 バンカー接続が完了しました。リモート署名が有効です。",
                 "user_pubkey": status.get("user_pubkey"),
                 "user_npub": status.get("user_npub")
             }))
@@ -1160,25 +1049,61 @@ impl ToolExecutor {
             debug!("NIP-46 クライアント接続開始（QR コード生成）");
             let result = self.nip46_session.start_client_connect().await?;
 
+            // バックグラウンドで接続完了を監視し、接続完了時にサイナーを切り替える
+            let session = self.nip46_session.clone();
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                // 接続完了を定期的にチェック（最大120秒）
+                for _ in 0..60 {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    if session.is_connected().await {
+                        if let Some(signer) = session.get_nostr_connect().await {
+                            if let Some(pubkey) = session.connected_pubkey().await {
+                                let mut client_guard = client.write().await;
+                                if let Err(e) = client_guard.enable_nip46_signer(signer, pubkey).await {
+                                    tracing::warn!("NIP-46 サイナーの有効化に失敗: {}", e);
+                                } else {
+                                    tracing::info!("NIP-46 サイナーをバックグラウンドで有効化しました");
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            });
+
             Ok(json!({
                 "success": true,
                 "mode": "client",
                 "status": "waiting",
-                "message": "QR コードをリモートサイナーアプリ（Primal、Amber 等）でスキャンしてください。",
+                "message": "QR コードをリモートサイナーアプリ（Primal、Amber 等）でスキャンしてください。接続完了時に自動的にリモート署名が有効になります。",
                 "connect_uri": result.connect_uri,
                 "qr_base64": result.qr_base64
             }))
         }
     }
 
+    /// NIP-46 セッションのサイナーを NostrClient に設定するヘルパー
+    async fn activate_nip46_signer(&self) -> Result<()> {
+        if let Some(signer) = self.nip46_session.get_nostr_connect().await {
+            if let Some(pubkey) = self.nip46_session.connected_pubkey().await {
+                let mut client_guard = self.client.write().await;
+                client_guard.enable_nip46_signer(signer, pubkey).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// NIP-46 接続ステータスを確認
     async fn nostr_connect_status(&self) -> Result<Value> {
         debug!("NIP-46 接続ステータス確認");
         let status = self.nip46_session.status_json().await;
+        let nip46_active = self.client.read().await.is_nip46_active().await;
 
         Ok(json!({
             "success": true,
-            "connection": status
+            "connection": status,
+            "signer_active": nip46_active
         }))
     }
 
@@ -1187,27 +1112,23 @@ impl ToolExecutor {
         debug!("NIP-46 切断");
         self.nip46_session.disconnect().await?;
 
+        // NostrClient のサイナーも無効化
+        let mut client_guard = self.client.write().await;
+        client_guard.disable_nip46_signer().await;
+
         Ok(json!({
             "success": true,
-            "message": "NIP-46 リモートサイナーとの接続を切断しました。"
+            "message": "NIP-46 リモートサイナーとの接続を切断しました。読み取り専用モードに戻ります。"
         }))
     }
 
     /// リレーリストを取得
     async fn get_relay_list(&self, arguments: Value) -> Result<Value> {
-        let pubkey = arguments
-            .get("pubkey")
-            .or_else(|| arguments.get("npub"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("必須パラメータが不足: pubkey"))?;
-
-        if pubkey.is_empty() {
-            return Err(anyhow!("pubkey は空にできません"));
-        }
+        let pubkey = require_str_param(&arguments, &["pubkey", "npub"])?;
 
         debug!("リレーリスト取得: {}", pubkey);
 
-        let relay_list = self.client.get_relay_list(pubkey).await?;
+        let relay_list = self.client.read().await.get_relay_list(pubkey).await?;
 
         let formatted_relays: Vec<Value> = relay_list.relays.iter().map(|entry| {
             json!({
