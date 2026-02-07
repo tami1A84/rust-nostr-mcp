@@ -66,6 +66,11 @@
 - `nostr_connect_status` - リモートサイナーの接続状態を確認
 - `nostr_disconnect` - リモートサイナーとの接続を切断
 
+### ツール（NIP-B7: Blossom メディアアップロード - 実装済み）
+- `upload_media` - Blossom サーバーにメディアファイルをアップロード（BUD-02）
+- `get_blossom_servers` - ユーザーの Blossom サーバーリスト (Kind 10063) を取得
+- `set_blossom_servers` - Blossom サーバーリスト (Kind 10063) を公開
+
 ### Phase 7: MCP Apps 対応（実装済み）
 
 MCP Apps (SEP-1865) に基づくインタラクティブ UI 拡張。MCP Apps 対応クライアント（Goose、Claude Desktop、VS Code、ChatGPT）でリッチ UI を表示。
@@ -113,6 +118,7 @@ MCP Apps (SEP-1865) に基づくインタラクティブ UI 拡張。MCP Apps �
 | NIP-50 | 検索 | 実装済み |
 | NIP-57 | Zaps | 実装済み |
 | NIP-65 | リレーリスト | 実装済み |
+| NIP-B7 | Blossom メディアアップロード | 実装済み |
 | MCP Apps | インタラクティブ UI 拡張 (SEP-1865) | 実装済み |
 | NIP-44 | バージョン付き暗号ペイロード | Phase 5 で追加予定 |
 | NIP-EE | MLS E2EE メッセージング | Phase 5 で追加予定 |
@@ -336,7 +342,8 @@ AI Agent:
   "auth-mode": "local",
   "bunker-uri": "bunker://...",
   "nip46-relays": ["wss://relay.nsec.app"],
-  "nwc-uri": "nostr+walletconnect://..."
+  "nwc-uri": "nostr+walletconnect://...",
+  "blossom-servers": ["https://blossom.primal.net"]
 }
 ```
 
@@ -350,6 +357,7 @@ AI Agent:
 | `bunker-uri` | NIP-46 bunker:// URI | なし |
 | `nip46-relays` | NIP-46 通信用リレー | `relay.nsec.app`, `relay.damus.io` |
 | `nwc-uri` | Nostr Wallet Connect URI（Zap 用） | なし |
+| `blossom-servers` | Blossom サーバー URL リスト（NIP-B7 メディアアップロード用） | なし（デフォルト: blossom.primal.net） |
 
 ### リレー設定オプション
 - `read`: このリレーからイベントを取得
@@ -374,8 +382,9 @@ src/
 ├── mcp.rs           # MCP プロトコルハンドラ（MCP Apps 拡張対応）
 ├── mcp_apps.rs      # MCP Apps UI リソース管理
 ├── nip46.rs         # NIP-46 Nostr Connect セッション管理
+├── blossom.rs       # Blossom メディアアップロード (NIP-B7, BUD-02)
 ├── nostr_client.rs  # Nostr SDK ラッパー
-├── tools.rs         # ツール定義とエグゼキュータ（23 ツール）
+├── tools.rs         # ツール定義とエグゼキュータ（26 ツール）
 └── ui_templates.rs  # HTML テンプレート管理
 
 ui/

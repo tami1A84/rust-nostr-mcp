@@ -1474,6 +1474,174 @@ impl NostrClient {
         }
     }
 
+    // ========================================
+    // NIP-B7: Blossom メディアアップロード
+    // ========================================
+
+    /// Blossom アップロード用の認証イベント (Kind 24242) を署名
+    ///
+    /// BUD-02 に基づき、`t=upload`、`x=<sha256>`、`expiration` タグを含む
+    /// Kind 24242 イベントを署名します（リレーには公開しない）。
+    pub async fn sign_blossom_auth(
+        &self,
+        sha256_hex: &str,
+        file_size: u64,
+        content_type: &str,
+    ) -> Result<Event> {
+        self.require_write_access()?;
+
+        let expiration = Timestamp::from(Timestamp::now().as_u64() + 300); // 5分後に有効期限切れ
+
+        let tags = vec![
+            Tag::custom(
+                TagKind::custom("t".to_string()),
+                vec!["upload".to_string()],
+            ),
+            Tag::custom(
+                TagKind::custom("x".to_string()),
+                vec![sha256_hex.to_string()],
+            ),
+            Tag::expiration(expiration),
+            Tag::custom(
+                TagKind::custom("size".to_string()),
+                vec![file_size.to_string()],
+            ),
+        ];
+
+        let builder = EventBuilder::new(Kind::from(24242), format!("Upload {}", content_type))
+            .tags(tags);
+
+        let event = self
+            .client
+            .sign_event_builder(builder)
+            .await
+            .context("Blossom 認証イベントの署名に失敗")?;
+
+        debug!(
+            "Blossom 認証イベントを署名: kind={}, id={}",
+            event.kind,
+            event.id
+        );
+
+        Ok(event)
+    }
+
+    /// ユーザーの Blossom サーバーリスト (Kind 10063) を取得
+    pub async fn get_blossom_servers(&self, pubkey_str: Option<&str>) -> Result<Vec<String>> {
+        let pubkey = if let Some(pk_str) = pubkey_str {
+            Self::parse_public_key(pk_str)?
+        } else if let Some(pk) = self.public_key {
+            pk
+        } else {
+            return Err(anyhow!(
+                "公開鍵が必要です。pubkey パラメータを指定するか、認証してください。"
+            ));
+        };
+
+        let filter = Filter::new()
+            .author(pubkey)
+            .kind(Kind::from(10063))
+            .limit(1);
+
+        let events = self
+            .client
+            .fetch_events(vec![filter], Duration::from_secs(5))
+            .await
+            .context("Blossom サーバーリストの取得に失敗")?;
+
+        let servers: Vec<String> = events
+            .iter()
+            .flat_map(|event| {
+                event
+                    .tags
+                    .iter()
+                    .filter_map(|tag| {
+                        let values = tag.as_slice();
+                        if values.len() >= 2 && values[0] == "server" {
+                            Some(values[1].to_string())
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .collect();
+
+        debug!("Blossom サーバーリスト取得: {} 件", servers.len());
+        Ok(servers)
+    }
+
+    /// Blossom サーバーリスト (Kind 10063) を公開
+    pub async fn publish_blossom_servers(&self, servers: &[String]) -> Result<EventId> {
+        self.require_write_access()?;
+
+        let tags: Vec<Tag> = servers
+            .iter()
+            .map(|url| {
+                Tag::custom(
+                    TagKind::custom("server".to_string()),
+                    vec![url.clone()],
+                )
+            })
+            .collect();
+
+        let builder = EventBuilder::new(Kind::from(10063), "").tags(tags);
+
+        let output = self
+            .client
+            .send_event_builder(builder)
+            .await
+            .context("Blossom サーバーリストの公開に失敗")?;
+
+        let event_id = *output.id();
+        info!(
+            "Blossom サーバーリストを公開: {} ({} サーバー)",
+            event_id,
+            servers.len()
+        );
+        Ok(event_id)
+    }
+
+    /// メディアファイルを Blossom サーバーにアップロード (NIP-B7)
+    ///
+    /// 1. ファイルの SHA-256 ハッシュを計算
+    /// 2. Kind 24242 認証イベントを署名
+    /// 3. BUD-02 の PUT /upload でアップロード
+    pub async fn upload_media(
+        &self,
+        data: Vec<u8>,
+        content_type: &str,
+        server_url: &str,
+    ) -> Result<crate::blossom::BlobDescriptor> {
+        self.require_write_access()?;
+
+        let sha256_hex = crate::blossom::compute_sha256(&data);
+        let file_size = data.len() as u64;
+
+        // Kind 24242 認証イベントを署名
+        let auth_event = self
+            .sign_blossom_auth(&sha256_hex, file_size, content_type)
+            .await?;
+
+        // 認証ヘッダーを構築
+        let event_json = serde_json::to_string(&auth_event)
+            .context("認証イベントの JSON 化に失敗")?;
+        let auth_header = crate::blossom::create_auth_header(&event_json);
+
+        // Blossom サーバーにアップロード
+        let descriptor =
+            crate::blossom::upload_blob(server_url, data, content_type, &auth_header).await?;
+
+        // SHA-256 の検証
+        if descriptor.sha256 != sha256_hex {
+            warn!(
+                "Blossom サーバーから返された SHA-256 が一致しません: expected={}, got={}",
+                sha256_hex, descriptor.sha256
+            );
+        }
+
+        Ok(descriptor)
+    }
+
     /// すべてのリレーから切断します。
     pub async fn disconnect(&self) {
         let _ = self.client.disconnect().await;
