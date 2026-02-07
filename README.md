@@ -11,6 +11,7 @@ AI アシスタント（Goose、Claude Desktop、VS Code 等）から Nostr を�
 - **記事管理** - 長文記事の投稿、下書きの保存・取得
 - **Zap** - Lightning Zap の送受信（NWC 設定が必要）
 - **DM** - 暗号化ダイレクトメッセージの送受信
+- **メディアアップロード** - Blossom サーバーへの画像・動画・音声ファイルのアップロード（NIP-B7）
 - **リモートサイニング** - NIP-46 で秘密鍵をサーバーに置かずにモバイルウォレットで署名
 - **リッチ UI** - MCP Apps 対応クライアントでノートカード・記事プレビュー・Zap ボタン等をインタラクティブ表示
 
@@ -129,6 +130,20 @@ Lightning Zap を送信するには、NWC (Nostr Wallet Connect) URI を設定�
 
 NWC URI は Lightning ウォレット（Alby、Mutiny Wallet 等）から取得できます。
 
+### 6. Blossom サーバーの設定（メディアアップロードしたい場合）
+
+画像や動画を Blossom サーバーにアップロードするには、`blossom-servers` を設定してください：
+
+```json
+{
+  "relays": { ... },
+  "privatekey": "nsec1...",
+  "blossom-servers": ["https://blossom.primal.net"]
+}
+```
+
+設定しない場合はデフォルトで `blossom.primal.net` が使用されます。`set_blossom_servers` ツールで Kind 10063 イベントとして Nostr 上に公開することもできます。
+
 ## MCP Apps（リッチ UI）について
 
 MCP Apps (SEP-1865) は MCP の公式拡張仕様で、ツール実行結果をインタラクティブな UI としてチャット内に表示します。本サーバーは以下の 5 つの UI コンポーネントを提供します。
@@ -182,6 +197,8 @@ AI アシスタントに話しかけるだけで使えます：
 | DM を送る | 「npub1... に『こんにちは』と DM して」 |
 | NIP-46 で接続する | 「Nostr に接続して」（QR コードが表示される） |
 | リレーリストを確認 | 「npub1... のリレーリストを教えて」 |
+| 画像をアップロード | 「この画像を Blossom にアップロードして」 |
+| Blossom サーバーを確認 | 「自分の Blossom サーバーリストを見せて」 |
 
 ## ツール一覧
 
@@ -232,6 +249,14 @@ AI アシスタントに話しかけるだけで使えます：
 |---|---|---|
 | `get_relay_list` | リレーリストを取得 | 不要 |
 
+### メディアアップロード（NIP-B7 Blossom）
+
+| ツール名 | 説明 | 秘密鍵 |
+|---|---|---|
+| `upload_media` | Blossom サーバーにメディアファイルをアップロード（BUD-02） | 必要 |
+| `get_blossom_servers` | ユーザーの Blossom サーバーリスト（Kind 10063）を取得 | 不要 |
+| `set_blossom_servers` | Blossom サーバーリスト（Kind 10063）を公開 | 必要 |
+
 ### リモートサイニング（NIP-46）
 
 | ツール名 | 説明 | 秘密鍵 |
@@ -266,7 +291,8 @@ AI アシスタントに話しかけるだけで使えます：
   "auth-mode": "local",
   "bunker-uri": "bunker://...",
   "nip46-relays": ["wss://relay.nsec.app"],
-  "nwc-uri": "nostr+walletconnect://..."
+  "nwc-uri": "nostr+walletconnect://...",
+  "blossom-servers": ["https://blossom.primal.net"]
 }
 ```
 
@@ -280,6 +306,7 @@ AI アシスタントに話しかけるだけで使えます：
 | `bunker-uri` | NIP-46 bunker:// URI | なし |
 | `nip46-relays` | NIP-46 通信用リレー | `relay.nsec.app`, `relay.damus.io` |
 | `nwc-uri` | Nostr Wallet Connect URI（Zap 用） | なし |
+| `blossom-servers` | Blossom サーバー URL リスト（メディアアップロード用） | `blossom.primal.net` |
 
 ### 環境変数（設定ファイルの代替）
 
@@ -307,6 +334,7 @@ AI アシスタントに話しかけるだけで使えます：
 | NIP-50 | 検索 | 実装済み |
 | NIP-57 | Zaps | 実装済み |
 | NIP-65 | リレーリスト | 実装済み |
+| NIP-B7 | Blossom メディアアップロード | 実装済み |
 
 ## トラブルシューティング
 
@@ -324,6 +352,9 @@ AI アシスタントに話しかけるだけで使えます：
 
 **Zap が送れない**
 → `config.json` に `nwc-uri` が設定されていることを確認してください。NWC URI は Lightning ウォレット（Alby 等）から取得できます。
+
+**メディアのアップロードに失敗する**
+→ 秘密鍵または NIP-46 接続が必要です。Blossom サーバーがダウンしている場合は、`config.json` の `blossom-servers` に別のサーバーを設定するか、`upload_media` の `server` パラメータで直接指定してください。
 
 ## 開発
 
@@ -348,8 +379,9 @@ src/
 ├── mcp.rs           # MCP プロトコルハンドラ（MCP Apps 拡張対応）
 ├── mcp_apps.rs      # MCP Apps UI リソース管理
 ├── nip46.rs         # NIP-46 Nostr Connect セッション管理
+├── blossom.rs       # Blossom メディアアップロード (NIP-B7, BUD-02)
 ├── nostr_client.rs  # Nostr SDK ラッパー
-├── tools.rs         # ツール定義とエグゼキュータ（23 ツール）
+├── tools.rs         # ツール定義とエグゼキュータ（26 ツール）
 └── ui_templates.rs  # HTML テンプレート管理
 
 ui/
