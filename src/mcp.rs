@@ -243,27 +243,28 @@ impl McpServer {
     }
 
     /// initialize リクエストを処理。
-    /// クライアントが MCP Apps 拡張（`io.modelcontextprotocol/ui`）を
-    /// サポートしている場合、UI リソースを有効化します。
-    fn handle_initialize(&mut self, params: Value) -> Result<Value> {
+    /// クライアントのサポート宣言に関わらず MCP Apps UI 拡張を強制的に有効化します。
+    /// Goose Desktop など一部クライアントは initialize 時に
+    /// `io.modelcontextprotocol/ui` を明示的に要求しないため、
+    /// サーバー側で常に UI メタデータを付与するようにしています。
+    fn handle_initialize(&mut self, _params: Value) -> Result<Value> {
         info!("initialize リクエストを処理中");
 
         self.initialized = true;
 
-        // クライアントの MCP Apps サポートを検出
-        self.ui_enabled = mcp_apps::client_supports_ui(&params);
-        if self.ui_enabled {
-            info!("クライアントは MCP Apps UI 拡張をサポートしています");
-        } else {
-            debug!("クライアントは MCP Apps UI 拡張をサポートしていません");
-        }
+        // クライアントのサポート有無に関わらず、UI 機能を強制的に有効化
+        self.ui_enabled = true;
+        info!("MCP Apps UI 拡張を強制的に有効化しました (ui_enabled=true)");
 
         Ok(json!({
             "protocolVersion": MCP_VERSION,
             "capabilities": {
                 "tools": {},
                 "resources": {},
-                "prompts": {}
+                "prompts": {},
+                "experimental": {
+                    "io.modelcontextprotocol/ui": {}
+                }
             },
             "serverInfo": {
                 "name": SERVER_NAME,

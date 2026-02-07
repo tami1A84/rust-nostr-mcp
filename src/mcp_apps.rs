@@ -118,6 +118,10 @@ const TOOL_UI_MAPPINGS: &[ToolUiMapping] = &[
 /// クライアントが MCP Apps 拡張をサポートしているかチェックする。
 /// `initialize` リクエストの `params.capabilities.extensions` に
 /// `io.modelcontextprotocol/ui` が含まれているか確認する。
+///
+/// 注: 現在は `handle_initialize` で `ui_enabled` を強制的に `true` にしているため
+/// この関数は直接使用されていませんが、テストおよび将来のクライアント判定用に保持しています。
+#[allow(dead_code)]
 pub fn client_supports_ui(init_params: &Value) -> bool {
     init_params
         .get("capabilities")
